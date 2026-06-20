@@ -773,7 +773,15 @@ defmodule PtcRunner.Lisp do
         )
       rescue
         e in ExecutionError ->
-          {:error, {e.reason, e.message, e.data}}
+          # A :tool_error renders through `format_error/1` as `{:tool_error,
+          # NAME, reason}` (NAME in slot 2). When the raise supplied a separate
+          # `tool_name` (BUG-462), use it so the bare name — not the already-rich
+          # `message` — fills the name slot and the formatter wraps exactly once.
+          if e.reason == :tool_error and e.tool_name do
+            {:error, {:tool_error, e.tool_name, e.data}}
+          else
+            {:error, {e.reason, e.message, e.data}}
+          end
 
         e in PtcRunner.ToolExecutionError ->
           {:error, {:tool_error, e.tool_name, e.message}, e.eval_ctx}
@@ -1654,6 +1662,7 @@ defmodule PtcRunner.Lisp do
         raise ExecutionError,
           reason: :tool_error,
           message: "tool '#{name}' failed: #{describe_reason(reason)}",
+          tool_name: name,
           data: reason
 
       value ->

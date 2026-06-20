@@ -319,7 +319,11 @@ defmodule PtcRunner.LispTest do
     end
 
     test "undefined variable returns error" do
-      assert {:error, ["foo"]} = Lisp.validate("(and (map? foo) true)")
+      # PATCH-2 (preflight hints): validate surfaces an actionable
+      # "Undefined variable: NAME. Did you mean: ..." message, not a bare name.
+      assert {:error, [msg]} = Lisp.validate("(and (map? foo) true)")
+      assert msg =~ "foo"
+      assert msg =~ "Undefined variable"
     end
 
     test "parse error returns formatted message" do
