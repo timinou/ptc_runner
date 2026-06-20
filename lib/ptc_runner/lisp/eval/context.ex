@@ -107,7 +107,14 @@ defmodule PtcRunner.Lisp.Eval.Context do
     # `all-ns`, `ns-name`) consult its PUBLIC export records — the SAME records
     # the analyzer/evaluator use, no separate registry (plan §8). Private
     # helpers have no export record and so never surface in discovery.
-    prelude: nil
+    prelude: nil,
+    # SPELL PATCH-3 (D-2): the `PtcRunner.Lisp.HandleStore` server (or nil)
+    # that owns large parked tool results, plus the opaque `exec_id` bucket a
+    # re-parked projection result is filed under. Both nil when handle
+    # offloading is disabled (in-process / test callers), in which case tool
+    # results stay on the sandbox heap exactly as before.
+    handle_store: nil,
+    exec_id: nil
   ]
 
   @typedoc """
@@ -301,6 +308,8 @@ defmodule PtcRunner.Lisp.Eval.Context do
       strict_data: Keyword.get(opts, :strict_data, false),
       prelude_exports: prelude_exports(Keyword.get(opts, :prelude)),
       prelude: prelude_artifact(Keyword.get(opts, :prelude)),
+      handle_store: Keyword.get(opts, :handle_store),
+      exec_id: Keyword.get(opts, :exec_id),
       prints: [],
       tool_calls: [],
       pmap_calls: [],

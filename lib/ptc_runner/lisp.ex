@@ -411,6 +411,11 @@ defmodule PtcRunner.Lisp do
       max_tool_call_result_bytes: Keyword.get(opts, :max_tool_call_result_bytes),
       strict_data: Keyword.get(opts, :strict_data, false),
       discovery_exec: Keyword.get(opts, :discovery_exec),
+      # SPELL PATCH-3 (D-2): the HandleStore server + this execute's bucket id,
+      # passed by the Peer so handle-aware builtins can project parked values.
+      # nil when offloading is disabled (in-process / test callers).
+      handle_store: Keyword.get(opts, :handle_store),
+      exec_id: Keyword.get(opts, :exec_id),
       link: Keyword.get(opts, :link, false)
     }
   end
@@ -704,7 +709,9 @@ defmodule PtcRunner.Lisp do
       max_tool_calls: max_tool_calls,
       max_tool_call_result_bytes: max_tool_call_result_bytes,
       strict_data: strict_data,
-      discovery_exec: discovery_exec
+      discovery_exec: discovery_exec,
+      handle_store: handle_store,
+      exec_id: exec_id
     } = opts
 
     prelude = Map.get(opts, :prelude)
@@ -739,7 +746,11 @@ defmodule PtcRunner.Lisp do
         max_tool_call_result_bytes: max_tool_call_result_bytes,
         strict_data: strict_data,
         discovery_exec: discovery_exec,
-        prelude: prelude
+        prelude: prelude,
+        # SPELL PATCH-3 (D-2): hand the HandleStore + execute bucket to the
+        # EvalContext so handle-aware builtins can project parked values.
+        handle_store: handle_store,
+        exec_id: exec_id
       ]
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 

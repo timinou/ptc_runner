@@ -16,6 +16,10 @@ defmodule PtcRunner.Lisp.Eval.Apply do
 
   alias PtcRunner.Lisp.Env.Builtin
   alias PtcRunner.Lisp.Eval.Context, as: EvalContext
+  # SPELL PATCH-3 (D-2): handle-aware builtin dispatch.
+  alias PtcRunner.Lisp.Handle
+  alias PtcRunner.Lisp.HandleOps
+  alias PtcRunner.Lisp.HandleStore
   alias PtcRunner.Lisp.Eval.Helpers
   alias PtcRunner.Lisp.Eval.Patterns
   alias PtcRunner.Lisp.ExecutionError
@@ -40,9 +44,35 @@ defmodule PtcRunner.Lisp.Eval.Apply do
     do_apply_fun(fun_val, args, eval_ctx, do_eval_fn)
   end
 
-  defp do_apply_fun(%Builtin{} = builtin, args, %EvalContext{} = eval_ctx, do_eval_fn) do
-    with :ok <- maybe_validate_builtin_args(builtin, args) do
-      do_apply_fun(Builtin.unwrap(builtin), args, eval_ctx, do_eval_fn)
+  # SPELL PATCH-3 (D-2): handle-aware builtin dispatch. A projectable builtin
+  # (count/get/keys/...) applied to a parked-value Handle runs its projection IN
+  # the HandleStore process and copies back only the slice, so the heap never
+  # touches the full parked term. A NON-projectable builtin over a handle
+  # realizes it first (correctness over heap: rare). When no arg is a handle, the
+  # common case pays nothing.
+  defp do_apply_fun(%Builtin{name: name} = builtin, args, %EvalContext{} = eval_ctx, do_eval_fn) do
+    cond do
+      not Enum.any?(args, &Handle.handle?/1) ->
+        with :ok <- maybe_validate_builtin_args(builtin, args) do
+          do_apply_fun(Builtin.unwrap(builtin), args, eval_ctx, do_eval_fn)
+        end
+
+      # `handle?` / `handle-meta` read the struct itself (meta is carried in the
+      # handle, no store roundtrip and — critically — no realize). They are how a
+      # program inspects a parked value's cost/shape before projecting.
+      meta = handle_introspection(name, args) ->
+        {:ok, meta, eval_ctx}
+
+      projection = HandleOps.projection(name, args) ->
+        apply_handle_projection(projection, args, eval_ctx)
+
+      true ->
+        # Non-projectable builtin over a handle: realize handle args, retry.
+        realized = Enum.map(args, &realize_handle/1)
+
+        with :ok <- maybe_validate_builtin_args(builtin, realized) do
+          do_apply_fun(Builtin.unwrap(builtin), realized, eval_ctx, do_eval_fn)
+        end
     end
   end
 
@@ -391,6 +421,56 @@ defmodule PtcRunner.Lisp.Eval.Apply do
     end
   end
 
+  # SPELL PATCH-3 (D-2): pure handle introspection — reads the struct, never the
+  # parked term (so the apply cond falls through to projection/realize).
+  defp handle_introspection(:handle?, [%Handle{}]), do: true
+  defp handle_introspection(:"handle-meta", [%Handle{meta: meta}]), do: meta
+  defp handle_introspection(_name, _args), do: nil
+
+  # Run a HandleStore projection and return the slice as a normal eval result.
+  # The handle is located by predicate, NOT by position: map ops put it first
+  # (`(get h k)`) but seq ops put it last (`(take n h)`), so a positional
+  # `[handle | _]` would bind the wrong arg for `take` and crash.
+  # A stale handle (escaped its execute, term already released) surfaces as a
+  # clear runtime error rather than a silent nil.
+  defp apply_handle_projection(projection, args, %EvalContext{} = eval_ctx) do
+    handle = Enum.find(args, &Handle.handle?/1)
+
+    case HandleStore.project(handle, projection, eval_ctx.exec_id) do
+      {:ok, value} ->
+        {:ok, value, eval_ctx}
+
+      {:error, :stale_handle} ->
+        {:error, {:runtime_error, "stale value handle (released)"}}
+
+      {:error, {:evicted, _id}} ->
+        {:error, {:runtime_error, "binding evicted (session store ceiling); re-run to rebind"}}
+    end
+  end
+
+  # Realize a handle to its full value (non-projectable builtin fallback).
+  # A stale handle degrades to nil (pre-existing semantics, unchanged). An
+  # EVICTED session handle fails LOUD: a reaped binding is a missing required
+  # value, and a silent nil here would propagate a plausible-but-wrong result
+  # (the very class this hardening removes). The projection path is already
+  # loud; realize must match it.
+  defp realize_handle(%Handle{} = h) do
+    case HandleStore.realize(h) do
+      {:ok, value} ->
+        value
+
+      {:error, :stale_handle} ->
+        nil
+
+      {:error, {:evicted, _id}} ->
+        raise ExecutionError,
+          reason: :runtime_error,
+          message: "binding evicted (session store ceiling); re-run to rebind"
+    end
+  end
+
+  defp realize_handle(other), do: other
+
   defp maybe_validate_builtin_args(%Builtin{binding: {:normal, fun}} = builtin, args) do
     if function_arity(fun) == length(args), do: validate_builtin_args(builtin, args), else: :ok
   end
@@ -735,7 +815,14 @@ defmodule PtcRunner.Lisp.Eval.Apply do
         parallel_budget: eval_context.parallel_budget,
         max_tool_call_result_bytes: eval_context.max_tool_call_result_bytes,
         tools_meta: eval_context.tools_meta,
-        discovery_exec: eval_context.discovery_exec
+        discovery_exec: eval_context.discovery_exec,
+        # SPELL PATCH-3 (D-2): propagate the handle store + GC bucket so a
+        # projection INSIDE a closure body (e.g. `(map #(get h %) ks)`) parks
+        # any oversized nested result under the RIGHT exec_id. Omitting these
+        # buckets a re-parked term under nil, which release/1 never sweeps
+        # — an unbounded cross-execute leak.
+        handle_store: eval_context.handle_store,
+        exec_id: eval_context.exec_id
       )
 
     eval_ctx =
@@ -1136,7 +1223,12 @@ defmodule PtcRunner.Lisp.Eval.Apply do
               summaries: caller_ctx.summaries,
               journal: caller_ctx.journal,
               discovery_exec: caller_ctx.discovery_exec,
-              catalog_ops: caller_ctx.catalog_ops
+              catalog_ops: caller_ctx.catalog_ops,
+              # SPELL PATCH-3 (D-2): propagate the handle store + GC bucket into
+              # nested closure evaluation (see the eval_closure_args note) so an
+              # in-closure re-park is filed under the live execute, not nil.
+              handle_store: caller_ctx.handle_store,
+              exec_id: caller_ctx.exec_id
           }
           |> maybe_push_prelude_origin(meta, caller_ctx)
 
