@@ -112,6 +112,10 @@ defmodule PtcRunner.Lisp.Runtime.Builtins do
       # ============================================================
       {:get, {:multi_arity, :get, {&Runtime.get/2, &Runtime.get/3}}},
       {:"get-in", {:multi_arity, :"get-in", {&Runtime.get_in/2, &Runtime.get_in/3}}},
+      # SPELL PATCH-6 (E7): strict accessors that fail loud on a missing key
+      # (a present nil-valued key still returns nil via flex_fetch).
+      {:get!, {:normal, &Runtime.get!/2}},
+      {:"get-in!", {:normal, &Runtime.get_in!/2}},
       {:assoc, {:collect, &Runtime.assoc_variadic/1}},
       {:"assoc-in", {:normal, &Runtime.assoc_in/3}},
       {:update, {:collect, &Runtime.update_variadic/1}},

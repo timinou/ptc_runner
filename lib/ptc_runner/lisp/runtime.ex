@@ -142,6 +142,9 @@ defmodule PtcRunner.Lisp.Runtime do
 
   defdelegate get(m, k), to: MapOps
   defdelegate get(m, k, default), to: MapOps
+  defdelegate get!(m, k), to: MapOps
+  defdelegate get_in!(m, path), to: MapOps
+
   defdelegate get_in(m, path), to: MapOps
   defdelegate get_in(m, path, default), to: MapOps
   defdelegate assoc(m, k, v), to: MapOps

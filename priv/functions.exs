@@ -1896,6 +1896,40 @@
       divergences: nil
     },
     %{
+      name: "get!",
+      description:
+        "Like get, but FAILS LOUD with an error if the key is absent (nil on a present nil-value key does NOT fail). Uses the same keyword/string/hyphen-aware key resolution as get.",
+      binding: :normal,
+      category: :core,
+      dispatch: :env,
+      signatures: ["(get! m key)"],
+      since: nil,
+      section: "Core",
+      ptc_extension?: true,
+      examples: [],
+      notes: nil,
+      see_also: ["get", "get-in!"],
+      clojure_var: nil,
+      divergences: nil
+    },
+    %{
+      name: "get-in!",
+      description:
+        "Like get-in, but FAILS LOUD with an error on the first absent path segment. Walks the path step by step so the error names the missing segment.",
+      binding: :normal,
+      category: :core,
+      dispatch: :env,
+      signatures: ["(get-in! m path)"],
+      since: nil,
+      section: "Core",
+      ptc_extension?: true,
+      examples: [],
+      notes: nil,
+      see_also: ["get-in", "get!"],
+      clojure_var: nil,
+      divergences: nil
+    },
+    %{
       name: "group-by",
       description: "Group items by key",
       binding: :normal,

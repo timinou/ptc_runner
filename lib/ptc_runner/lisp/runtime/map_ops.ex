@@ -92,6 +92,79 @@ defmodule PtcRunner.Lisp.Runtime.MapOps do
     end
   end
 
+
+  @doc """
+  Strict get: like `get/2` but raises ExecutionError if the key is absent.
+
+  Uses `FlexAccess.flex_fetch/2` for keyword/string/hyphen-aware lookup.
+  A present key whose value is `nil` returns `nil` (only ABSENCE fails).
+  """
+  def get!(m, k) when is_map(m) and not is_struct(m) do
+    case FlexAccess.flex_fetch(m, k) do
+      {:ok, value} -> value
+      :error ->
+        raise ExecutionError,
+          reason: :type_error,
+          message: "get!: required key #{inspect(k)} absent from map"
+    end
+  end
+
+  def get!(l, k) when is_list(l) do
+    case FlexAccess.flex_fetch(l, k) do
+      {:ok, value} -> value
+      :error ->
+        # BUG-463: name the actual container. A LIST hit here usually means the
+        # value was indexed by key when it should be by position or (first …)'d
+        # — the classic (get (tool/find …) "k") trap (tool/find returns a list).
+        raise ExecutionError,
+          reason: :type_error,
+          message:
+            "get!: required key #{inspect(k)} absent from list " <>
+              "(#{length(l)} items — index by position, or (first …) it first)"
+    end
+  end
+
+  def get!(nil, k) do
+    # BUG-463: the container is nil, not a map.
+    raise ExecutionError,
+      reason: :type_error,
+      message: "get!: cannot get key #{inspect(k)} — value is nil"
+  end
+
+  @doc """
+  Strict get-in: like `get-in/2` but raises ExecutionError on the first absent path segment.
+
+  Walks the path step by step with `FlexAccess.flex_fetch/2` so it can report
+  which specific segment was missing.
+  """
+  def get_in!(data, path) when is_list(path) do
+    get_in_step!(data, path)
+  end
+
+  defp get_in_step!(data, []), do: data
+
+  defp get_in_step!(data, [key | rest]) when is_map(data) or is_list(data) do
+    case FlexAccess.flex_fetch(data, key) do
+      {:ok, value} -> get_in_step!(value, rest)
+      :error ->
+        raise ExecutionError,
+          reason: :type_error,
+          message: "get-in!: path segment #{inspect(key)} absent"
+    end
+  end
+
+  defp get_in_step!(nil, _path) do
+    raise ExecutionError,
+      reason: :type_error,
+      message: "get-in!: cannot access path on nil"
+  end
+
+  defp get_in_step!(_data, [key | _rest]) do
+    raise ExecutionError,
+      reason: :type_error,
+      message: "get-in!: path segment #{inspect(key)} absent"
+  end
+
   @doc """
   Associate key-value pairs with a map.
 

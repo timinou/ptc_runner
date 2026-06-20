@@ -209,6 +209,12 @@ defmodule PtcRunner.Lisp.Env do
   defp args_spec(:reduce),
     do: {:arity, %{2 => [:callable, :seqable], 3 => [:callable, :any, :seqable]}}
 
+  # SPELL PATCH-6 (E7): strict accessors fail loud on a MISSING key (a present
+  # nil-valued key still returns nil). Fixed-arity, NOT multi_arity — the point
+  # is to fail, not default.
+  defp args_spec(:get!), do: [:associative_or_nil, :any]
+  defp args_spec(:"get-in!"), do: [:associative_or_nil, :seqable]
+
   defp args_spec(_name), do: :unchecked
 
   @doc """
