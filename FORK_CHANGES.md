@@ -59,6 +59,7 @@ all WRITE-path / Elixir-core, the PTC sandbox cannot reach them):
 | `effe383b` | `feat(step): Step.form — executed CoreAST as data` | MOVE-C |
 | `b3fd78d4` | `feat(handle): expose deep_realize/1; Step.freeze delegates` | FEAT-002 |
 | `7e885c8a` | `feat(turn): propagate Step.def_delta + Step.form to Turn (MOVE-A'/C')` | MOVE-A'/C' |
+| `6f733c3a` | `fix: post-0.12-rebase drift (tool error double-wrap, hint test, schema)` | BUG-005 |
 
 > The probe special form (labelled ordered investigation) and the `psettled`
 > predicates ride inside the PATCH-1 commit (they share its eval/analyze
@@ -109,8 +110,10 @@ a near-pure projection:
 
 ## Verification at time of writing
 
-- fork lisp suite: **3400 passed** (incl. the MOVE-A/MOVE-C generative +
-  AST-drift contract tests), 0 failures.
+- fork FULL suite: **6595 passed** (393 doctests, 4 properties, 6198 tests),
+  0 failures — incl. MOVE-A/B/C, MOVE-A'/C' propagation, FEAT-002 deep_realize,
+  and the BUG-005 post-rebase fixups. (PLAN-007 had verified only the
+  `test/ptc_runner/lisp/` subdir at 3400; the full suite is now green.)
 - `beam/ptc_runtime`: **135 passed** (handle offload, psettled, try/catch,
   session bindings, probe), 0 failures.
 - `beam/spell_agent`: **331 passed** (Hist, TUI, session suites), 0 failures.
