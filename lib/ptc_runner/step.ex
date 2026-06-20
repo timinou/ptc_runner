@@ -192,6 +192,14 @@ defmodule PtcRunner.Step do
     :return,
     :fail,
     :memory,
+    # SPELL MOVE-A: the per-run def-delta, computed once AT THE SOURCE (the
+    # runtime already evaluated every `(def ...)`), so consumers stop
+    # snapshot-diffing two full `memory` maps to recover what changed. Shape:
+    # `%{introduced: %{name => value}, changed: %{name => value}}` — `introduced`
+    # is a name absent from the entering memory, `changed` is a name whose value
+    # differs. `nil` when no run executed (error before eval). PTC has no
+    # `undef`, so there is no `removed` set; a delta can only add or rebind.
+    :def_delta,
     :journal,
     :signature,
     :usage,
@@ -345,6 +353,7 @@ defmodule PtcRunner.Step do
           return: term() | nil,
           fail: fail() | nil,
           memory: map(),
+          def_delta: %{introduced: map(), changed: map()} | nil,
           journal: map() | nil,
           signature: String.t() | nil,
           usage: usage() | nil,

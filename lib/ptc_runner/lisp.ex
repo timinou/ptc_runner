@@ -1031,6 +1031,10 @@ defmodule PtcRunner.Lisp do
       return: value |> externalize_lisp_values() |> round_floats(precision),
       fail: nil,
       memory: externalize_memory(ctx.user_ns),
+      # SPELL MOVE-A: emit the per-run def-delta computed AT THE SOURCE from the
+      # entering vs final def memory. Same externalization as `memory` so the
+      # values are wire-identical to what a consumer would read off the full map.
+      def_delta: compute_def_delta(ctx.initial_user_ns, ctx.user_ns),
       journal: ctx.journal,
       summaries: ctx.summaries,
       tool_cache: ctx.tool_cache,
@@ -1107,6 +1111,32 @@ defmodule PtcRunner.Lisp do
   end
 
   defp externalize_lisp_values(value), do: value
+
+  # SPELL MOVE-A: the per-run def-delta, computed at the source from the def
+  # memory as it entered the run vs as it left. `introduced` = a name absent
+  # before; `changed` = a name present before with a different value. PTC has no
+  # `undef`, so omission-as-deletion (the BUG-001 hazard a downstream snapshot
+  # diff inherits) cannot occur here. Values are externalized identically to
+  # `Step.memory`, and RuntimeCallables are dropped (same as memory) so the
+  # delta is wire-safe. Key presence is checked with `Map.has_key?` so binding a
+  # name to `nil` is recorded as a real introduction.
+  defp compute_def_delta(before, after_) when is_map(before) and is_map(after_) do
+    before_ext = externalize_memory(before)
+    after_ext = externalize_memory(after_)
+
+    {introduced, changed} =
+      Enum.reduce(after_ext, {%{}, %{}}, fn {k, v}, {intro, chg} ->
+        cond do
+          not Map.has_key?(before_ext, k) -> {Map.put(intro, k, v), chg}
+          Map.fetch!(before_ext, k) != v -> {intro, Map.put(chg, k, v)}
+          true -> {intro, chg}
+        end
+      end)
+
+    %{introduced: introduced, changed: changed}
+  end
+
+  defp compute_def_delta(_before, _after), do: nil
 
   defp externalize_memory(memory) when is_map(memory) do
     memory

@@ -41,6 +41,13 @@ defmodule PtcRunner.Lisp.Eval.Context do
   defstruct [
     :ctx,
     :user_ns,
+    # SPELL MOVE-A: the `user_ns` (def memory) as it entered this run, captured
+    # once at `new/6` and never mutated. The runtime already knows every `(def
+    # ...)` it evaluated; diffing `initial_user_ns` against the final `user_ns`
+    # at Step build yields the per-run def-delta AT THE SOURCE, so consumers
+    # (SpellAgent.Hist, TraceLog memory_diff) don't each re-derive it by
+    # snapshot-diffing two full memory maps.
+    :initial_user_ns,
     :env,
     :tool_exec,
     :origin_stack,
@@ -201,6 +208,7 @@ defmodule PtcRunner.Lisp.Eval.Context do
   @type t :: %__MODULE__{
           ctx: map(),
           user_ns: map(),
+          initial_user_ns: map(),
           env: map(),
           tool_exec: (String.t(), map(), map() | nil -> term()),
           origin_stack: [map()],
@@ -284,6 +292,9 @@ defmodule PtcRunner.Lisp.Eval.Context do
     %__MODULE__{
       ctx: ctx,
       user_ns: user_ns,
+      # SPELL MOVE-A: snapshot the entering def memory so the Step can emit the
+      # per-run def-delta without a separate downstream snapshot diff.
+      initial_user_ns: user_ns,
       env: env,
       tool_exec: tool_exec,
       origin_stack: Keyword.get(opts, :origin_stack, []),
