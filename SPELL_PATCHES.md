@@ -626,3 +626,74 @@ lib/ptc_runner/lisp.ex               — emit form: ctx.core_ast in Step build
 
 Tests: `test/ptc_runner/lisp/step_form_test.exs` (12, incl. the 7-source
 AST-drift contract + a CoreToSource round-trip).
+
+## MOVE-A'/C': propagate `Step.def_delta` + `Step.form` to `Turn` ✅ LANDED
+
+**Disposition**: spell-specific plumbing (depends on MOVE-A/MOVE-C), small and
+upstreamable.
+
+MOVE-A/MOVE-C land their fields on a per-RUN `%PtcRunner.Step{}` (one
+`Lisp.run`). But a multi-turn agent run accumulates per-run results into
+`step.turns` as `%PtcRunner.Turn{}`, and a per-turn consumer (`SpellAgent.Hist`
+records PER TURN) only ever sees the `%Turn{}` — which did not carry `def_delta`
+or `form`. So the Moves never reached the consumer that needed them, forcing it
+back to snapshot-diffing / re-parsing.
+
+Carry the two fields one hop down. Every turn-build site in the loop already
+holds the per-run `lisp_step` and copies `lisp_step.memory`; `.def_delta` and
+`.form` sit right beside it.
+
+- `Turn` gains `:def_delta` + `:form` (+ `@type`); `Turn.success/5` and
+  `Turn.failure/5` thread them out of `params`.
+- `Metrics.build_turn/5` accepts `def_delta:`/`form:` opts into the params map.
+- Every `Metrics.build_turn` caller with a `lisp_step` in scope passes
+  `def_delta: lisp_step.def_delta, form: lisp_step.form` (loop.ex ×8,
+  ptc_tool_call.ex ×6, runner.ex ×1). Synthetic/text-mode/budget turns with no
+  run leave both `nil` — the honest signal for "fall back to a diff".
+
+The load-bearing contract: folding the per-turn `def_delta`s (introduced ∪
+changed, in order) reproduces `step.memory`. This is what lets the Hist cutover
+(PLAN-008 SEAM 1) delete its `map_delta` snapshot-diff.
+
+### Files touched
+
+```
+lib/ptc_runner/turn.ex                        — :def_delta + :form fields, @type, success/failure
+lib/ptc_runner/sub_agent/loop/metrics.ex      — build_turn params: def_delta/form opts
+lib/ptc_runner/sub_agent/loop.ex              — 8 build_turn callers pass lisp_step.def_delta/form
+lib/ptc_runner/sub_agent/loop/ptc_tool_call.ex — 6 build_turn callers
+lib/ptc_runner/sub_agent/runner.ex            — 1 build_turn caller
+```
+
+Tests: `test/ptc_runner/sub_agent/turn_move_propagation_test.exs` (3, incl. the
+fold-equals-memory equivalence across a real multi-turn run).
+
+## FEAT-002: expose `Handle.deep_realize/1` (single realization walker) ✅ LANDED
+
+**Disposition**: spell-specific (PATCH-3 handle system), a clean public walker.
+
+Two identical handle-realization deep-walkers existed: `Step.freeze/1`'s private
+`freeze_term/1`, and `SpellAgent.Hist.Realize.walk/1` on the consumer side. The
+consumer copy still raced the reaper, and the cont/tape path (not part of a
+`%Step{}`) could not use `freeze`. Lift ONE walker into the runtime.
+
+- `PtcRunner.Lisp.Handle.deep_realize/1` — deep-walk a term, realize every
+  `%Handle{}` through its store (recursively), tombstone an unrealizable handle
+  as `{:__frozen_unrealized__, reason, meta}`. `Handle.unrealized?/1` classifies.
+- `Step.freeze/1` now delegates each field to `Handle.deep_realize/1`;
+  `Step.unrealized?/1` delegates to `Handle.unrealized?/1`. Public contract of
+  both is unchanged (existing MOVE-B tests pass verbatim).
+- Lets `SpellAgent.Hist` delete its entire `Realize` module: the Step path uses
+  `Step.freeze`, the cont/tape path calls `Handle.deep_realize` directly. One
+  algorithm, one tombstone tag.
+
+### Files touched
+
+```
+lib/ptc_runner/lisp/handle.ex  — deep_realize/1, unrealized?/1, tombstone type
+lib/ptc_runner/step.ex          — freeze/1 + unrealized?/1 delegate to Handle
+```
+
+Tests: `test/ptc_runner/lisp/handle_deep_realize_test.exs` (8: bare/nested/
+struct/recursive realize, evicted-term tombstone, identity on plain data).
+

@@ -57,6 +57,8 @@ all WRITE-path / Elixir-core, the PTC sandbox cannot reach them):
 | `35dce1f0` | `feat(lisp): Step.def_delta — per-run def-delta at the source` | MOVE-A |
 | `67e8af11` | `feat(step): Step.freeze/1 — materialize parked handles at the owner` | MOVE-B |
 | `effe383b` | `feat(step): Step.form — executed CoreAST as data` | MOVE-C |
+| `b3fd78d4` | `feat(handle): expose deep_realize/1; Step.freeze delegates` | FEAT-002 |
+| `7e885c8a` | `feat(turn): propagate Step.def_delta + Step.form to Turn (MOVE-A'/C')` | MOVE-A'/C' |
 
 > The probe special form (labelled ordered investigation) and the `psettled`
 > predicates ride inside the PATCH-1 commit (they share its eval/analyze
