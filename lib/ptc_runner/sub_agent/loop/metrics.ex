@@ -426,6 +426,13 @@ defmodule PtcRunner.SubAgent.Loop.Metrics do
       # SubAgent run could clobber the shared per-turn slot. Binding it to the
       # Turn makes the canonical event's provenance reentrancy-safe.
       prelude_trace: TraceContext.lisp_prelude_trace(),
+      # SPELL MOVE-A'/C': carry the per-run Step's def_delta + executed CoreAST
+      # onto the Turn. Callers with a `lisp_step` in scope pass these through so
+      # per-turn consumers read structure the runtime already computed, instead
+      # of re-diffing memory / re-parsing the program string. nil when no run
+      # produced them (synthetic/budget/terminal-attach turns).
+      def_delta: Keyword.get(opts, :def_delta),
+      form: Keyword.get(opts, :form),
       type: turn_type
     }
 

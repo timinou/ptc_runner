@@ -45,6 +45,16 @@ defmodule PtcRunner.Turn do
     :messages,
     :system_prompt,
     :prelude_trace,
+    # SPELL MOVE-A'/C': the per-turn projection of the per-run %Step{} Moves.
+    # `def_delta` is `%{introduced: %{name => value}, changed: %{name => value}}`
+    # (the def-delta the runtime computed AT THE SOURCE for THIS turn's run), or
+    # nil for a turn with no eval (compile error before run, budget exhaustion).
+    # `form` is the executed CoreAST (the structured program AS DATA), or nil.
+    # Consumers (e.g. spell Hist) read these instead of snapshot-diffing two
+    # `memory` maps or re-parsing the `program` STRING. See PtcRunner.Step
+    # fields `def_delta`/`form` (the per-run originals these project from).
+    :def_delta,
+    :form,
     type: :normal
   ]
 
@@ -90,6 +100,8 @@ defmodule PtcRunner.Turn do
           messages: [message()] | nil,
           system_prompt: String.t() | nil,
           prelude_trace: map() | nil,
+          def_delta: %{introduced: map(), changed: map()} | nil,
+          form: term() | nil,
           type: turn_type()
         }
 
@@ -144,6 +156,8 @@ defmodule PtcRunner.Turn do
       messages: Map.get(params, :messages),
       system_prompt: Map.get(params, :system_prompt),
       prelude_trace: Map.get(params, :prelude_trace),
+      def_delta: Map.get(params, :def_delta),
+      form: Map.get(params, :form),
       type: Map.get(params, :type, :normal)
     }
   end
@@ -195,6 +209,8 @@ defmodule PtcRunner.Turn do
       messages: Map.get(params, :messages),
       system_prompt: Map.get(params, :system_prompt),
       prelude_trace: Map.get(params, :prelude_trace),
+      def_delta: Map.get(params, :def_delta),
+      form: Map.get(params, :form),
       type: Map.get(params, :type, :normal)
     }
   end

@@ -867,6 +867,8 @@ defmodule PtcRunner.SubAgent.Loop do
             prints: lisp_step.prints,
             tool_calls: lisp_step.tool_calls,
             memory: lisp_step.memory,
+            def_delta: lisp_step.def_delta,
+            form: lisp_step.form,
             type: state.current_turn_type
           )
 
@@ -989,6 +991,8 @@ defmodule PtcRunner.SubAgent.Loop do
         prints: lisp_step.prints,
         tool_calls: lisp_step.tool_calls,
         memory: lisp_step.memory,
+        def_delta: lisp_step.def_delta,
+        form: lisp_step.form,
         type: state.current_turn_type
       )
 
@@ -1028,6 +1032,8 @@ defmodule PtcRunner.SubAgent.Loop do
         prints: lisp_step.prints,
         tool_calls: lisp_step.tool_calls,
         memory: lisp_step.memory,
+        def_delta: lisp_step.def_delta,
+        form: lisp_step.form,
         type: state.current_turn_type
       )
 
@@ -1081,6 +1087,8 @@ defmodule PtcRunner.SubAgent.Loop do
         prints: lisp_step.prints,
         tool_calls: lisp_step.tool_calls,
         memory: lisp_step.memory,
+        def_delta: lisp_step.def_delta,
+        form: lisp_step.form,
         type: state.current_turn_type
       )
 
@@ -1111,6 +1119,8 @@ defmodule PtcRunner.SubAgent.Loop do
         prints: lisp_step.prints,
         tool_calls: lisp_step.tool_calls,
         memory: lisp_step.memory,
+        def_delta: lisp_step.def_delta,
+        form: lisp_step.form,
         type: state.current_turn_type
       )
 
@@ -1160,6 +1170,8 @@ defmodule PtcRunner.SubAgent.Loop do
       prints: lisp_step.prints,
       tool_calls: lisp_step.tool_calls,
       memory: lisp_step.memory,
+      def_delta: lisp_step.def_delta,
+      form: lisp_step.form,
       type: state.current_turn_type || :normal
     )
   end
@@ -1389,6 +1401,8 @@ defmodule PtcRunner.SubAgent.Loop do
         prints: lisp_step.prints,
         tool_calls: lisp_step.tool_calls,
         memory: lisp_step.memory,
+        def_delta: lisp_step.def_delta,
+        form: lisp_step.form,
         type: state.current_turn_type || :normal
       )
 
@@ -1443,6 +1457,8 @@ defmodule PtcRunner.SubAgent.Loop do
         prints: lisp_step.prints,
         tool_calls: lisp_step.tool_calls,
         memory: lisp_step.memory,
+        def_delta: lisp_step.def_delta,
+        form: lisp_step.form,
         type: state.current_turn_type
       )
 

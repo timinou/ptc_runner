@@ -519,7 +519,9 @@ defmodule PtcRunner.SubAgent.Runner do
         success?: status == :ok,
         prints: lisp_step.prints,
         tool_calls: lisp_step.tool_calls,
-        memory: lisp_step.memory
+        memory: lisp_step.memory,
+        def_delta: lisp_step.def_delta,
+        form: lisp_step.form
       )
 
     Metrics.apply_trace_filter([turn], trace_mode, status == :error)
