@@ -552,8 +552,14 @@ defmodule PtcRunner.Lisp do
       with {:ok, raw_ast} <- Parser.parse(source),
            {:ok, core_ast} <- Analyze.analyze(raw_ast) do
         case collect_undefined_vars(core_ast, MapSet.new()) do
-          [] -> :ok
-          undefined -> {:error, Enum.uniq(undefined)}
+          [] ->
+            :ok
+
+          undefined ->
+            # SPELL PATCH-2 (D-5): return hinted messages, not bare names, so
+            # an out-of-band validate (e.g. the Peer preflight lint) gets the
+            # same "Did you mean" guidance as the in-band gate.
+            {:error, undefined |> Enum.uniq() |> Enum.map(&undefined_var_hint/1)}
         end
       else
         {:error, reason} -> {:error, [format_validate_error(reason)]}
@@ -1158,10 +1164,34 @@ defmodule PtcRunner.Lisp do
       undefined ->
         vars = Enum.uniq(undefined)
 
-        label = if length(vars) == 1, do: "Undefined variable", else: "Undefined variables"
-
-        {:error, Step.error(:unbound_var, "#{label}: #{Enum.join(vars, ", ")}", %{})}
+        # SPELL PATCH-2 (D-5): route the unbound-var message through the rich
+        # hint builder (special-form / nearest-Clojure-name / hyphen-vs-underscore
+        # / jaro suggestions) instead of a bare name list.
+        {:error, Step.error(:unbound_var, undefined_vars_message(vars), %{})}
     end
+  end
+
+  # SPELL PATCH-2 (D-5): preflight hint enrichment. The undefined-var check is
+  # the pre-execution gate — a hallucinated builtin (`map-vals`) fails HERE,
+  # before any tool call runs (0 effects). Route each name through
+  # `Helpers.format_closure_error/1` so the gate also carries the
+  # nearest-builtin / special-form / hyphen hints (e.g. "Did you mean:
+  # update-vals") instead of a bare list. Single var → the rich one-liner;
+  # multiple → one hinted line each.
+  defp undefined_vars_message([var]), do: undefined_var_hint(var)
+
+  defp undefined_vars_message(vars) do
+    "Undefined variables:\n" <>
+      Enum.map_join(vars, "\n", fn v -> "  - " <> undefined_var_hint(v) end)
+  end
+
+  defp undefined_var_hint(var) do
+    # Use the bounded-vocab interner (NOT String.to_atom — issue #953): a known
+    # name resolves to its atom so the special-form / builtin hint branches
+    # match; a genuinely unknown name stays a binary, which the jaro-distance
+    # `find_similar_builtin` path still handles via `to_string/1`.
+    name = if is_binary(var), do: SourceAtoms.intern(var), else: var
+    Helpers.format_closure_error({:unbound_var, name})
   end
 
   # Pre-execution check: reject programs that reference tools not in the provided

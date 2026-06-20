@@ -170,6 +170,13 @@ defmodule PtcRunner.Lisp.Eval.Helpers do
 
   # Common Clojure/Java functions that don't exist in PTC-Lisp, with alternatives
   @clojure_alternatives %{
+    # SPELL PATCH-2 (D-5): high-frequency hallucinated builtins observed in
+    # practice — the agent reaches for a Clojure name PTC-Lisp spells
+    # differently. Jaro distance misses these (too far), so name them directly.
+    "map-vals" => "use update-vals to map over a map's values",
+    "map-keys" => "use update-keys to map over a map's keys",
+    "dedupe-by" => "use (distinct ...) or (dedupe ...) — no -by variant",
+    "group-by-vals" => "use group-by, then update-vals over the groups",
     "format" => "use str and arithmetic, e.g. (str (* 100.0 (/ a b)) \"%\")",
     "re-find" => "use grep for line matching, or (re-pattern \"...\") with re-find",
     "re-seq" => "use (re-seq (re-pattern \"...\") text) — requires compiled regex",
