@@ -101,6 +101,16 @@ defmodule PtcRunner.Lisp.Eval.Helpers do
         "got (#{describe_type(k)}, map), arguments appear to be swapped", args}}
   end
 
+  # (contains? <string> <string>) — contains? is collections-only (map/set/list);
+  # callers reach for it on strings. Point at the string analogue. BUG-462.
+  defp specific_type_error(:contains?, [s, sub] = args)
+       when is_binary(s) and is_binary(sub) do
+    {:ok,
+     {:type_error,
+      "contains? is for collections (map/set/list). For strings use " <>
+        "(includes? s sub) or (index-of s sub) (>= 0 when present)", args}}
+  end
+
   defp specific_type_error(_name, _args), do: :none
 
   defp display_name(:get_in), do: "get-in"
