@@ -408,6 +408,82 @@ defmodule PtcRunner.Step do
     }
   end
 
+  @typedoc """
+  SPELL MOVE-B: marker left in place of a handle that could not be materialized
+  at freeze time (already evicted/stale). Shape: `{:__frozen_unrealized__,
+  reason, meta}` where `meta` is the handle's cheap descriptor (bytes/shape/
+  keys/count). A frozen Step never crashes a consumer: a dead binding becomes a
+  flagged tombstone, not an exception.
+  """
+  @type unrealized :: {:__frozen_unrealized__, term(), map()}
+
+  @doc """
+  SPELL MOVE-B: materialize every parked-value `%PtcRunner.Lisp.Handle{}` inside
+  a Step, returning a Step that is self-contained, serializable data.
+
+  ## Why this lives in the runtime, not the consumer
+
+  A large tool result is parked off-heap in `PtcRunner.Lisp.HandleStore` and a
+  Step field (`return`, `memory`, `def_delta`, a `tool_calls` entry's `:result`,
+  or a nested `turns` field) holds a small `%Handle{}` referencing it. The store
+  reaps cold session entries under a ceiling, so a handle a CONSUMER persisted
+  and later realized is a time bomb: by then its term may be evicted. The runtime
+  OWNS the store and knows the term is live NOW, so it is the correct place to
+  freeze — the consumer should never race the reaper from outside.
+
+  `freeze/1` deep-walks maps, lists, tuples, and the public fields of structs,
+  replacing each handle with its realized value (itself frozen, since a realized
+  value may nest handles). A handle that fails to realize degrades to a
+  `t:unrealized/0` tombstone rather than raising. A Step with no handles is
+  returned unchanged (cheap walk, no allocation churn beyond the scan).
+  """
+  @spec freeze(t()) :: t()
+  def freeze(%__MODULE__{} = step) do
+    %{
+      step
+      | return: freeze_term(step.return),
+        memory: freeze_term(step.memory),
+        def_delta: freeze_term(step.def_delta),
+        tool_calls: freeze_term(step.tool_calls),
+        pmap_calls: freeze_term(step.pmap_calls),
+        turns: freeze_term(step.turns)
+    }
+  end
+
+  @doc "Whether `term` is a freeze-time unrealizable tombstone."
+  @spec unrealized?(term()) :: boolean()
+  def unrealized?({:__frozen_unrealized__, _reason, _meta}), do: true
+  def unrealized?(_), do: false
+
+  # A handle is realized through its store, then the materialized value is
+  # frozen (it may nest handles). A non-Handle struct has its public fields
+  # frozen while preserving the struct type. The handle's `store`/`id` are never
+  # walked field-wise.
+  defp freeze_term(term) do
+    cond do
+      PtcRunner.Lisp.Handle.handle?(term) -> freeze_handle(term)
+      is_map(term) and not is_struct(term) -> Map.new(term, fn {k, v} -> {freeze_term(k), freeze_term(v)} end)
+      is_struct(term) -> freeze_struct(term)
+      is_list(term) -> Enum.map(term, &freeze_term/1)
+      is_tuple(term) -> term |> Tuple.to_list() |> Enum.map(&freeze_term/1) |> List.to_tuple()
+      true -> term
+    end
+  end
+
+  defp freeze_handle(%PtcRunner.Lisp.Handle{meta: meta} = handle) do
+    case PtcRunner.Lisp.HandleStore.realize(handle) do
+      {:ok, term} -> freeze_term(term)
+      {:error, reason} -> {:__frozen_unrealized__, reason, meta}
+    end
+  end
+
+  defp freeze_struct(%mod{} = s) do
+    s
+    |> Map.from_struct()
+    |> Map.new(fn {k, v} -> {k, freeze_term(v)} end)
+    |> then(&struct(mod, &1))
+  end
+
   @doc """
   Creates a new failed Step.
 
