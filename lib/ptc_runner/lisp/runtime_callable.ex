@@ -14,7 +14,11 @@ defmodule PtcRunner.Lisp.RuntimeCallable do
 
   defstruct [:namespace, :name, :eval_ctx, :do_eval]
 
-  @type namespace :: :tool
+  # SPELL PATCH (PLAN-346 W3): harness/ + keymap/ join tool/ as runtime-callable
+  # namespaces (the spell_agent inspector's Reaction DSL). Their `name` is already
+  # the QUALIFIED tool name (e.g. :"harness/expand") so core_call routes them
+  # through the same tool-call form.
+  @type namespace :: :tool | :harness | :keymap
   @type t :: %__MODULE__{
           namespace: namespace(),
           name: atom(),
@@ -103,6 +107,12 @@ defmodule PtcRunner.Lisp.RuntimeCallable do
   def serializable?(_), do: true
 
   defp core_call(%__MODULE__{namespace: :tool, name: name}, args) do
+    {:ok, {:tool_call, name, literal_args(args)}}
+  end
+
+  # harness/ + keymap/ (PLAN-346 W3): `name` is already the qualified tool name
+  # ("harness/expand"), so route it through the tool-call machinery like tool/.
+  defp core_call(%__MODULE__{namespace: ns, name: name}, args) when ns in [:harness, :keymap] do
     {:ok, {:tool_call, name, literal_args(args)}}
   end
 

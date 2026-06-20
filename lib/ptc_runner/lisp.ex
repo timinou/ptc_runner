@@ -1448,6 +1448,11 @@ defmodule PtcRunner.Lisp do
   end
 
   defp collect_tool_names({:runtime_callable, :tool, name}, acc), do: MapSet.put(acc, name)
+  # SPELL PATCH (PLAN-346 W3): harness/ + keymap/ value-position callables carry
+  # the qualified tool name; collect them as tool deps like tool/.
+  defp collect_tool_names({:runtime_callable, ns, name}, acc) when ns in [:harness, :keymap],
+    do: MapSet.put(acc, name)
+
   defp collect_tool_names({:runtime_callable, _namespace, _name}, acc), do: acc
   defp collect_tool_names({:symbol_ref, _name}, acc), do: acc
 

@@ -124,6 +124,7 @@ defmodule PtcRunner.Lisp.SourceAtoms do
   # is one atom, not `java.time` + `LocalDate`.
   @bounded_namespaces ~w(
     data tool budget json mcp
+    harness keymap
     str string set regex
     walk
     Math System Boolean Double Float Integer Long
@@ -140,6 +141,8 @@ defmodule PtcRunner.Lisp.SourceAtoms do
     summary remaining servers
     parse-string parse-lines generate-string between text json
     re-pattern
+    state cursor-id descendants ancestors expand collapse toggle focus cursor scroll turn
+    bind unbind show intents define-reaction
   )a
 
   # Symbol special names appearing in analyzer pattern matches that

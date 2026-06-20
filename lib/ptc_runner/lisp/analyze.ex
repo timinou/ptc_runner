@@ -286,6 +286,23 @@ defmodule PtcRunner.Lisp.Analyze do
     {:ok, {:runtime_callable, :tool, name}}
   end
 
+  # SPELL PATCH (PLAN-346 W3): harness/ and keymap/ in VALUE position, e.g.
+  # `(reduce harness/expand (harness/state) ids)` passes harness/expand as a fn.
+  # Mirror the tool/ runtime-callable so they can be used higher-order. The host
+  # binds the qualified name ("harness/expand") in the tools map; RuntimeCallable
+  # routes a :harness/:keymap callable to a {:tool_call, "<ns>/<name>", _} form.
+  # Value position (higher-order). Same atom-safety rule as the call-position
+  # clause above: only an allowlisted (already-interned ATOM) member becomes a
+  # qualified callable; a binary member is an unknown verb and is rejected without
+  # interning a new atom.
+  defp do_analyze({:ns_symbol, ns, name}, _tail?) when ns in [:harness, :keymap] and is_atom(name) do
+    {:ok, {:runtime_callable, ns, :"#{ns}/#{name}"}}
+  end
+
+  defp do_analyze({:ns_symbol, ns, name}, _tail?) when ns in [:harness, :keymap] do
+    {:error, {:invalid_form, "unknown #{ns} verb: #{ns}/#{name}"}}
+  end
+
   # Budget introspection: (budget/remaining) returns budget info map
   defp do_analyze({:ns_symbol, :budget, :remaining}, _tail?), do: {:ok, {:budget_remaining}}
 
@@ -545,6 +562,30 @@ defmodule PtcRunner.Lisp.Analyze do
      {:invalid_arity, :"ns-name",
       "(ns-name namespace) requires exactly 1 argument, got #{length(args)}"}}
   end
+
+  # SPELL PATCH (PLAN-346 W3): harness/ and keymap/ namespaces. The spell_agent
+  # inspector's Reaction DSL exposes two sibling namespaces alongside tool/:
+  #   harness/  pure gaze-transform + forest-query verbs used INSIDE a reaction
+  #   keymap/   live-rebinding meta-ops (bind / define-reaction / show / intents)
+  # Both are routed through the existing tool-call machinery as QUALIFIED tool
+  # names ("harness/<name>", "keymap/<name>") so they reuse all of its limits,
+  # tracing, caching and undefined-var analysis with no new eval path — the host
+  # registers the qualified names in the tools map. This keeps tool/ uncluttered
+  # (the harness controls itself in its own namespace).
+  # `name` is a bounded ATOM only when it was in SourceAtoms' table (an allowlisted
+  # verb); an unknown member stays a BINARY. We must NOT build `:"ns/name"` from a
+  # binary — that permanently interns an attacker-chosen atom (atom-table DoS).
+  # So: atom member -> route as a qualified tool name; binary member -> reject
+  # WITHOUT atomizing.
+  defp dispatch_list_form({:ns_symbol, ns, name}, rest, _list, tail?)
+       when ns in [:harness, :keymap] and is_atom(name),
+       do: analyze_tool_call(:"#{ns}/#{name}", rest, tail?)
+
+  defp dispatch_list_form({:ns_symbol, ns, name}, _rest, _list, _tail?)
+       when ns in [:harness, :keymap],
+       do:
+         {:error,
+          {:invalid_form, "unknown #{ns} verb: #{ns}/#{name}"}}
 
   # Tool invocation via tool/ namespace: (tool/name args...)
   # Tool discovery via tool/ namespace
