@@ -191,6 +191,10 @@ defmodule PtcRunner.Lisp.CoreToSource do
     "(pmap #{format(fn_expr)} #{format_list(coll_exprs)})"
   end
 
+  def format({:psettled, fn_expr, coll_expr}) do
+    "(psettled #{format(fn_expr)} #{format(coll_expr)})"
+  end
+
   def format({:pcalls, fn_exprs}) do
     "(pcalls #{format_list(fn_exprs)})"
   end
@@ -378,8 +382,20 @@ defmodule PtcRunner.Lisp.CoreToSource do
     Enum.reduce(coll_exprs, acc, &collect_var_refs/2)
   end
 
+  defp collect_var_refs({:psettled, fn_expr, coll_expr}, acc) do
+    acc = collect_var_refs(fn_expr, acc)
+    collect_var_refs(coll_expr, acc)
+  end
+
   defp collect_var_refs({:pcalls, fn_exprs}, acc) do
     Enum.reduce(fn_exprs, acc, &collect_var_refs/2)
+  end
+
+  defp collect_var_refs({:probe, pairs}, acc) do
+    Enum.reduce(pairs, acc, fn {title, body}, a ->
+      a = collect_var_refs(title, a)
+      collect_var_refs(body, a)
+    end)
   end
 
   defp collect_var_refs({:juxt, fns}, acc) do

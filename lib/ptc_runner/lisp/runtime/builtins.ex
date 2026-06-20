@@ -366,6 +366,23 @@ defmodule PtcRunner.Lisp.Runtime.Builtins do
       {:parse, {:normal, &Runtime.parse_temporal/1}},
 
       # ============================================================
+      # SPELL PATCH-1 (D-4): psettled settled-result predicates. `psettled`
+      # returns {"ok" => v} / {"err" => reason} maps; these classify them and
+      # extract a value with a default — errors as data, no exception primitive.
+      # ============================================================
+      {:ok?, {:normal, &Runtime.ok?/1}},
+      {:err?, {:normal, &Runtime.err?/1}},
+      {:"unwrap-or", {:normal, &Runtime.unwrap_or/2}},
+
+      # ============================================================
+      # SPELL PATCH-3 (W2b, D-2/D-7): parked-value handle introspection. Read a
+      # %Handle{}'s bytes/shape/keys WITHOUT a store roundtrip or realize, so a
+      # program can inspect a parked value before projecting it.
+      # ============================================================
+      {:handle?, {:normal, &Runtime.handle?/1}},
+      {:"handle-meta", {:normal, &Runtime.handle_meta/1}},
+
+      # ============================================================
       # Double Constants
       # ============================================================
       {:POSITIVE_INFINITY, {:constant, :infinity}},

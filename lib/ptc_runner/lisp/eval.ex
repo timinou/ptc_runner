@@ -600,6 +600,14 @@ defmodule PtcRunner.Lisp.Eval do
     end
   end
 
+  # SPELL PATCH-1 (D-4): `psettled` is `pmap` with a SETTLED collector —
+  # a per-element logical failure becomes an `{"ok" => v}` / `{"err" => reason}`
+  # value instead of aborting the whole run. Shares the entire parallel
+  # machinery (heap cap, slot budget, deadline, trace) with `pmap`; only the
+  # worker's error-handling and the collector differ. See `eval_parallel_map/4`.
+  defp do_eval({:psettled, fn_ast, coll_ast}, %EvalContext{} = eval_ctx),
+    do: eval_parallel_map(:psettled, fn_ast, coll_ast, eval_ctx)
+
   # ============================================================
   # Parallel calls: pcalls
   # ============================================================
@@ -716,6 +724,109 @@ defmodule PtcRunner.Lisp.Eval do
     with {:ok, error, eval_ctx2} <- do_eval(error_ast, eval_ctx) do
       throw({:fail_signal, error, eval_ctx2})
     end
+  end
+
+  # ============================================================
+  # Exception handling: (try body (catch e handler) (finally cleanup))
+  #
+  # SPELL PATCH-8 (FEAT-812). Faithful Clojure semantics over BEAM try:
+  #   * a raised program error (ExecutionError / ToolExecutionError / any other
+  #     Elixir exception) OR `(fail v)` is CAUGHT and bound to the catch var
+  #     (raised errors → message string; `(fail v)` → the raw value v).
+  #   * `(return v)` is NOT an error: it bubbles through to the enclosing
+  #     `return` boundary (after running `finally`), like Clojure's non-local
+  #     return semantics over a try.
+  #   * `finally` ALWAYS runs — on normal completion, after a caught error, and
+  #     while a `return`/uncaught error propagates — for its side effects only;
+  #     its value is discarded.
+  #
+  # SANDBOX BOUNDARY (mirrors the psettled rescue, eval.ex stable_resource_error?):
+  # heap/timeout/capacity kills must NEVER be swallowed. A top-level heap or
+  # deadline kill terminates the BEAM process before any rescue runs, so it is
+  # uncatchable by construction. The one catchable form — a nested
+  # ExecutionError carrying a stable resource reason — is RE-RAISED past the
+  # handler here. ∴ `try` can never let a program settle past a global safety
+  # limit. The `finally` still runs on that re-raise (resource cleanup), then
+  # the kill propagates.
+  defp do_eval({:try, body_do, catch_clause, finally_do}, %EvalContext{} = eval_ctx) do
+    try do
+      # PTC has TWO error channels: most logical errors (unbound var, arithmetic,
+      # type, arity, tool failure) surface as an `{:error, reason}` RETURN TUPLE
+      # from do_eval (apply.ex converts those raises). Only an ExecutionError
+      # with a stable resource reason is re-raised past apply. So the tuple
+      # channel is the primary catch path; the rescue/catch arms cover the
+      # raise/throw ones.
+      case do_eval(body_do, eval_ctx) do
+        {:ok, _value, _ctx} = ok ->
+          ok
+
+        {:error, reason} ->
+          if catch_clause == nil do
+            {:error, reason}
+          else
+            run_try_catch(catch_clause, error_reason_to_value(reason), eval_ctx)
+          end
+      end
+    rescue
+      e in ExecutionError ->
+        # Global safety limit OR no handler → propagate (finally still runs via
+        # `after`). Only an ordinary program error WITH a catch clause is caught.
+        if stable_execution_error?(e) or catch_clause == nil do
+          reraise(e, __STACKTRACE__)
+        else
+          run_try_catch(catch_clause, Exception.message(e), eval_ctx)
+        end
+
+      e in PtcRunner.ToolExecutionError ->
+        # A tool failure RAISES (eval.ex record_tool_call_inner) rather than
+        # returning a tuple — catch it as an ordinary logical error. No handler
+        # re-raises so the failure still aborts the run.
+        if catch_clause == nil do
+          reraise(e, __STACKTRACE__)
+        else
+          run_try_catch(catch_clause, Exception.message(e), eval_ctx)
+        end
+    catch
+      # `(fail v)` is a catchable logical failure: bind the raw value v. With no
+      # catch clause it re-throws so the failure propagates unchanged.
+      {:fail_signal, _value, _ctx} = signal when catch_clause == nil ->
+        throw(signal)
+
+      {:fail_signal, value, _ctx} ->
+        run_try_catch(catch_clause, value, eval_ctx)
+    after
+      # `finally` runs on EVERY exit path (normal / caught / re-raised / return /
+      # fail). `(return v)` is not listed in `catch` above, so it bubbles to the
+      # enclosing return boundary — and `after` runs as it passes through.
+      run_try_finally(finally_do, eval_ctx)
+    end
+  end
+
+  # Investigation: (probe "title" expr ...) — a labelled, ordered sequence of
+  # checks. Evaluate each pair in order, threading ctx so a `def` in one check is
+  # visible to the next (like do/let). A check whose expr fails SETTLES in place
+  # as {"err" => reason} rather than aborting the whole probe (sequential
+  # psettled); ctx is preserved across a settled failure so later checks still
+  # run. Global safety kills (heap/timeout/capacity) re-raise past the settle,
+  # exactly like try/psettled. Result is the sentinel map
+  # {"__probe__" => [[title, value], ...]} — an ordered list of pairs the execute
+  # tool unwraps and renders as <probe title="...">value</probe> blocks.
+  defp do_eval({:probe, pairs}, %EvalContext{} = eval_ctx) do
+    {rows, final_ctx} =
+      Enum.reduce(pairs, {[], eval_ctx}, fn {title_ast, body_ast}, {acc, ctx} ->
+        {title, ctx} =
+          case do_eval(title_ast, ctx) do
+            {:ok, t, ctx2} -> {to_string(t), ctx2}
+            # A title that itself fails to evaluate is degenerate; label the row
+            # so the failure is visible rather than crashing the probe.
+            {:error, reason} -> {error_reason_to_value(reason), ctx}
+          end
+
+        {value, ctx} = eval_probe_body(body_ast, ctx)
+        {[[title, value] | acc], ctx}
+      end)
+
+    {:ok, %{"__probe__" => Enum.reverse(rows)}, final_ctx}
   end
 
   # Dynamic task ID: (task id-expr expr) — evaluate id-expr to get the string ID
@@ -983,6 +1094,87 @@ defmodule PtcRunner.Lisp.Eval do
   # ============================================================
   # Evaluation helpers
   # ============================================================
+
+  # Evaluate one probe check body, settling a logical failure as a value while
+  # preserving the threaded ctx. Mirrors the try error channels: the {:error,_}
+  # tuple path, a raised ExecutionError / ToolExecutionError, and a `(fail v)`
+  # throw — but a STABLE resource error (heap/timeout/capacity) re-raises so a
+  # global safety limit always wins, never settled.
+  defp eval_probe_body(body_ast, %EvalContext{} = eval_ctx) do
+    try do
+      case do_eval(body_ast, eval_ctx) do
+        {:ok, value, ctx2} -> {value, ctx2}
+        {:error, reason} -> {%{"err" => error_reason_to_value(reason)}, eval_ctx}
+      end
+    rescue
+      e in ExecutionError ->
+        if stable_execution_error?(e),
+          do: reraise(e, __STACKTRACE__),
+          else: {%{"err" => Exception.message(e)}, eval_ctx}
+
+      e in PtcRunner.ToolExecutionError ->
+        {%{"err" => Exception.message(e)}, eval_ctx}
+    catch
+      {:fail_signal, value, _ctx} -> {%{"err" => value}, eval_ctx}
+    end
+  end
+
+  # try/catch support (SPELL PATCH-8). Run the catch handler with the error
+  # value bound to the catch var. `nil` clause = re-raise already handled by the
+  # caller, so this is only reached WITH a clause. Returns the do_eval triple.
+  defp run_try_catch({var, handler_do}, error_value, %EvalContext{} = eval_ctx) do
+    handler_ctx = EvalContext.merge_env(eval_ctx, %{var => error_value})
+
+    case do_eval(handler_do, handler_ctx) do
+      {:ok, value, final_ctx} ->
+        # Drop the catch binding from the caller's scope (handler-local), like let.
+        {:ok, value, %{final_ctx | env: eval_ctx.env, locals: eval_ctx.locals}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # Run the finally body for side effects only; its value is discarded and the
+  # surrounding try result is preserved. A raise/throw INSIDE finally propagates
+  # (Clojure parity). `nil` = no finally clause, a no-op.
+  defp run_try_finally(nil, _eval_ctx), do: :ok
+
+  defp run_try_finally(finally_do, %EvalContext{} = eval_ctx) do
+    _ = do_eval(finally_do, eval_ctx)
+    :ok
+  end
+
+  # A nested ExecutionError carrying a stable resource reason must abort even
+  # under `try` — the same global-safety set the psettled worker re-raises.
+  defp stable_execution_error?(%ExecutionError{reason: reason})
+       when reason in [:memory_exceeded, :timeout, :parallel_capacity_exceeded],
+       do: true
+
+  defp stable_execution_error?(_), do: false
+
+  # Render a do_eval `{:error, reason}` tuple into the value bound to a catch
+  # var. PTC error reasons are heterogeneous tuples whose LAST string element is
+  # the human message (e.g. `{:type_error, msg, args}`, `{:arithmetic_error,
+  # msg}`, `{:unbound_var, name}`). Surface that string so a handler sees a
+  # readable message; fall back to inspect for atom/opaque reasons.
+  defp error_reason_to_value(msg) when is_binary(msg), do: msg
+
+  # BUG-465: reuse the ONE rich unbound-var formatter (special-form / clojure-
+  # alternative / underscore / jaro "Did you mean" hints) so a CAUGHT unbound var
+  # carries the same guidance as the uncaught top-level surface — don't strip the
+  # single best ergonomic affordance the moment a program wraps a call in try.
+  defp error_reason_to_value({:unbound_var, _name} = reason),
+    do: PtcRunner.Lisp.Eval.Helpers.format_closure_error(reason)
+
+  defp error_reason_to_value(reason) when is_tuple(reason) do
+    case Enum.find(Tuple.to_list(reason), &is_binary/1) do
+      nil -> inspect(reason)
+      msg -> msg
+    end
+  end
+
+  defp error_reason_to_value(reason), do: inspect(reason)
 
   defp resolve_local(name, locals, env, eval_ctx) do
     if MapSet.member?(locals, name), do: {:ok, Map.get(env, name), eval_ctx}, else: :error
@@ -1677,6 +1869,189 @@ defmodule PtcRunner.Lisp.Eval do
   defp parallel_deadline(%EvalContext{pmap_timeout: timeout}),
     do: System.monotonic_time(:millisecond) + timeout
 
+  # Shared implementation for `pmap` (fail-fast) and `psettled` (settled).
+  # `mode` selects the worker's failure semantics and the collector:
+  #   :pmap     — a logical worker error aborts the run (legacy behaviour)
+  #   :psettled — a logical worker error is captured as an {"err" => reason}
+  #               element; the run completes with one slot per input.
+  # Resource-exhaustion kills (heap/timeout/capacity) abort BOTH modes: the
+  # worker PROCESS is dead and cannot settle a value, and these are global
+  # safety limits the program must not be able to swallow.
+  defp eval_parallel_map(mode, fn_ast, coll_ast, %EvalContext{} = eval_ctx) do
+    with {:ok, fn_val, eval_ctx1} <- do_eval(fn_ast, eval_ctx),
+         {:ok, coll_val, eval_ctx2} <- do_eval(coll_ast, eval_ctx1) do
+      # Consistency check: keywords don't work with single hash-map in map/pmap
+      if keyword_runtime?(fn_val) and is_map(coll_val) and
+           not is_struct(coll_val) do
+        {:error,
+         {:type_error, "#{mode}: keyword accessor requires a list of maps, got a single map",
+          [fn_val, coll_val]}}
+      else
+        # Record start time for pmap execution
+        start_time = System.monotonic_time(:millisecond)
+        timestamp = DateTime.utc_now()
+        coll_list = Enum.to_list(coll_val)
+        count = length(coll_list)
+
+        # Security H1: every pmap/pcalls worker — top-level and nested —
+        # is spawned with a FIXED `max_heap_size` (`worker_max_heap`),
+        # NOT divided by concurrency. A shared `ParallelBudget` semaphore
+        # (`parallel_budget`) caps how many workers may be alive at once
+        # across the whole run, so aggregate live parallel heap is
+        # bounded by `max_parallel_workers * worker_max_heap` at any
+        # nesting depth. The worker's `EvalContext` keeps the SAME
+        # `worker_max_heap` and `parallel_budget`, so a nested
+        # pmap/pcalls inherits both. `pmap_deadline` is inherited so all
+        # nested calls share one deadline.
+        worker_max_heap = eval_ctx2.worker_max_heap
+        concurrency = bounded_concurrency(eval_ctx2.pmap_max_concurrency)
+        deadline_mono = parallel_deadline(eval_ctx2)
+        worker_eval_ctx = %{eval_ctx2 | pmap_deadline: deadline_mono}
+
+        # Convert the function value to a callable (may be a tuple for builtins)
+        # The closure captures a read-only snapshot of the environment at creation time
+        callable_fn = value_to_erlang_fn(fn_val, worker_eval_ctx)
+
+        # Capture trace context for propagation into worker processes
+        trace_ctx = TraceContext.capture()
+
+        worker_fun = parallel_worker_fun(mode, callable_fn, worker_eval_ctx)
+
+        runner_result =
+          ParallelRunner.run(coll_list, worker_fun,
+            worker_max_heap: worker_max_heap,
+            max_concurrency: concurrency,
+            budget: eval_ctx2.parallel_budget,
+            deadline_mono: deadline_mono,
+            trace_ctx: trace_ctx
+          )
+
+        # Collect results and child trace IDs
+        duration_ms = System.monotonic_time(:millisecond) - start_time
+
+        case collect_runner_results(runner_result, mode) do
+          {:ok, values, child_trace_ids, child_steps} ->
+            # In :psettled, every input yields a settled element, so all
+            # `count` workers "succeeded" at the runner level (errors are
+            # carried inside the {"err" => ...} values). In :pmap the runner
+            # short-circuits on the first error, so a successful collect means
+            # every element produced a value.
+            success_count = length(values)
+            error_count = count - success_count
+
+            # Record pmap execution
+            pmap_call = %{
+              type: mode,
+              count: count,
+              child_trace_ids: Enum.reject(child_trace_ids, &is_nil/1),
+              child_steps: Enum.reject(child_steps, &is_nil/1),
+              timestamp: timestamp,
+              duration_ms: duration_ms,
+              success_count: success_count,
+              error_count: error_count
+            }
+
+            eval_ctx3 = EvalContext.append_pmap_call(eval_ctx2, pmap_call)
+            {:ok, values, eval_ctx3}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      end
+    end
+  end
+
+  # Builds the per-element worker closure for `eval_parallel_map/4`.
+  #
+  # Both modes return the runner-level `worker_result` shape
+  # `{:ok, {:ok, value, trace_id, child_step}} | {:error, reason}`:
+  #
+  #   :pmap     — a logical error (tool failure / exception / return / fail)
+  #               becomes `{:error, reason}`, so the runner short-circuits and
+  #               aborts the whole operation (legacy semantics, unchanged).
+  #   :psettled — the SAME logical errors are instead packaged as a settled
+  #               `{"err" => reason}` VALUE returned via `{:ok, {:ok, ...}}`,
+  #               so the runner records it and keeps going. Successful values
+  #               are wrapped `{"ok" => value}`.
+  #
+  # Resource-exhaustion kills are NOT caught here: a heap-cap or shared-
+  # deadline kill terminates the worker process before any rescue runs, and
+  # `:parallel_capacity_exceeded` is raised by the runner itself. Those abort
+  # both modes — a program must not be able to settle past a global safety
+  # limit. (A nested `ExecutionError` carrying a stable resource reason is the
+  # one rescue that still propagates in :psettled, see below.)
+  defp parallel_worker_fun(mode, callable_fn, worker_eval_ctx) do
+    fn elem ->
+      try do
+        TraceContext.take_child_result()
+
+        value =
+          RuntimeCallable.with_context(worker_eval_ctx, &do_eval/2, fn ->
+            Callable.call(callable_fn, [elem])
+          end)
+
+        settled = settle_ok(mode, value)
+
+        case TraceContext.take_child_result() do
+          {trace_id, child_step} -> {:ok, {:ok, settled, trace_id, child_step}}
+          nil -> {:ok, {:ok, settled, nil, nil}}
+        end
+      rescue
+        e in PtcRunner.ToolExecutionError ->
+          settle_err(mode, {:pmap_error, "tool '#{e.tool_name}' failed: #{e.message}"})
+
+        e in ExecutionError ->
+          # A nested pmap/pcalls heap kill / shared-deadline timeout surfaces
+          # as an ExecutionError with a stable resource reason. Those are
+          # global safety limits: re-raise them even in :psettled so the run
+          # aborts rather than the program swallowing an OOM as data. Other
+          # ExecutionErrors are ordinary logical failures and settle.
+          err = nested_parallel_error(e)
+
+          if mode == :psettled and not stable_resource_error?(err) do
+            settle_err(mode, err)
+          else
+            {:error, err}
+          end
+
+        e ->
+          settle_err(mode, {:pmap_error, Exception.message(e)})
+      catch
+        {:return_signal, _, _} ->
+          settle_err(mode, {:pmap_error, "return called inside #{mode}"})
+
+        {:fail_signal, _, _} ->
+          settle_err(mode, {:pmap_error, "fail called inside #{mode}"})
+      end
+    end
+  end
+
+  # :pmap wraps a success value bare; :psettled tags it `{"ok" => value}`.
+  defp settle_ok(:psettled, value), do: %{"ok" => value}
+  defp settle_ok(_mode, value), do: value
+
+  # :pmap surfaces a logical error as a runner `{:error, reason}` (abort);
+  # :psettled returns it as a settled `{"err" => reason}` VALUE so the run
+  # continues. `reason` is rendered to a human string for the program.
+  defp settle_err(:psettled, reason),
+    do: {:ok, {:ok, %{"err" => settled_reason_string(reason)}, nil, nil}}
+
+  defp settle_err(_mode, reason), do: {:error, reason}
+
+  # Render a worker error reason into a stable string for the {"err" => _}
+  # value. Mirrors how `classify_runner_error/2` would describe it, minus the
+  # control-flow tuple wrapping the program cannot act on.
+  defp settled_reason_string({:pmap_error, msg}) when is_binary(msg), do: msg
+  defp settled_reason_string({reason, msg}) when is_atom(reason) and is_binary(msg), do: msg
+  defp settled_reason_string(other), do: inspect(other)
+
+  # Stable resource reasons must abort even in :psettled (see worker rescue).
+  defp stable_resource_error?({reason, _msg})
+       when reason in [:memory_exceeded, :timeout, :parallel_capacity_exceeded],
+       do: true
+
+  defp stable_resource_error?(_), do: false
+
   # Adapt a `ParallelRunner.run/3` result to the
   # `{:ok, values, trace_ids, child_steps}` / `{:error, reason}` shape
   # the pmap/pcalls clauses expect.
@@ -1730,6 +2105,7 @@ defmodule PtcRunner.Lisp.Eval do
   defp classify_runner_error(other, type), do: {parallel_error_type(type), inspect(other)}
 
   defp parallel_error_type(:pmap), do: :pmap_error
+  defp parallel_error_type(:psettled), do: :pmap_error
   defp parallel_error_type(:pcalls), do: :pcalls_error
 
   # Re-surface a nested pmap/pcalls failure caught as an ExecutionError

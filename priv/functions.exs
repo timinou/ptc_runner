@@ -3743,6 +3743,88 @@
       divergences: nil
     },
     %{
+      name: "ok?",
+      description: "True if x is a settled success {\"ok\" => _} (see psettled)",
+      binding: :normal,
+      category: :core,
+      dispatch: :env,
+      signatures: ["(ok? x)"],
+      since: nil,
+      section: "Core",
+      ptc_extension?: true,
+      examples: [],
+      notes: nil,
+      see_also: ["psettled", "err?", "unwrap-or"],
+      clojure_var: nil,
+      divergences: nil
+    },
+    %{
+      name: "err?",
+      description: "True if x is a settled failure {\"err\" => _} (see psettled)",
+      binding: :normal,
+      category: :core,
+      dispatch: :env,
+      signatures: ["(err? x)"],
+      since: nil,
+      section: "Core",
+      ptc_extension?: true,
+      examples: [],
+      notes: nil,
+      see_also: ["psettled", "ok?", "unwrap-or"],
+      clojure_var: nil,
+      divergences: nil
+    },
+    %{
+      name: "unwrap-or",
+      description: "Unwrap a settled {\"ok\" => v} to v; otherwise return default (see psettled)",
+      binding: :normal,
+      category: :core,
+      dispatch: :env,
+      signatures: ["(unwrap-or settled default)"],
+      since: nil,
+      section: "Core",
+      ptc_extension?: true,
+      examples: [],
+      notes: nil,
+      see_also: ["psettled", "ok?", "err?"],
+      clojure_var: nil,
+      divergences: nil
+    },
+    %{
+      name: "handle?",
+      description: "True if x is a parked-value handle (a large tool result offloaded off the sandbox heap)",
+      binding: :normal,
+      category: :core,
+      dispatch: :env,
+      signatures: ["(handle? x)"],
+      since: nil,
+      section: "Core",
+      ptc_extension?: true,
+      examples: [],
+      notes:
+        "Large tool results are auto-parked and returned as handles; count/get/get-in/keys/vals/select-keys/contains?/first/nth/take project them without realizing the whole value.",
+      see_also: ["handle-meta"],
+      clojure_var: nil,
+      divergences: nil
+    },
+    %{
+      name: "handle-meta",
+      description:
+        "Cost/shape of a parked handle WITHOUT realizing it: {\"bytes\" _, \"shape\" \"map\"|\"list\", \"count\" _, \"keys\" [...]}",
+      binding: :normal,
+      category: :core,
+      dispatch: :env,
+      signatures: ["(handle-meta x)"],
+      since: nil,
+      section: "Core",
+      ptc_extension?: true,
+      examples: ["(handle-meta (tool/org {:command \"dashboard\"}))"],
+      notes: "nil for a non-handle value.",
+      see_also: ["handle?"],
+      clojure_var: nil,
+      divergences: nil
+    },
+    %{
       name: "sort",
       description: "Sort by natural order",
       binding: :multi_arity,
@@ -5071,8 +5153,50 @@
         "Shares map's finite seqable contract: nil -> empty, strings map over graphemes, " <>
           "and multiple collections zip element-wise truncating to the shortest. Runs under " <>
           "bounded parallel limits (per-worker heap, worker budget, shared deadline).",
-      see_also: ["map", "pcalls"],
+      see_also: ["map", "pcalls", "psettled"],
       clojure_var: "pmap",
+      divergences: nil
+    },
+    %{
+      name: "psettled",
+      description:
+        "Like pmap, but a per-element failure is captured as {\"err\" => reason} instead of aborting the run; successes are {\"ok\" => value}. Use ok?/err?/unwrap-or to branch.",
+      binding: nil,
+      category: :core,
+      dispatch: :analyze,
+      signatures: ["(psettled f coll)"],
+      since: nil,
+      section: "Functional Tools",
+      ptc_extension?: true,
+      examples: [
+        "(psettled (fn [f] (tool/find {:target f})) data/files)",
+        "(->> (psettled risky coll) (filter ok?) (map #(unwrap-or % nil)))"
+      ],
+      notes:
+        "Resource-exhaustion kills (heap/timeout/parallel-capacity) still abort the whole run \u2014 a program cannot settle past a global safety limit.",
+      see_also: ["pmap", "ok?", "err?", "unwrap-or"],
+      clojure_var: nil,
+      divergences: nil
+    },
+    %{
+      name: "probe",
+      description:
+        "A labelled, ordered sequence of checks: (probe \"title\" expr \"title\" expr ...). Each expr is evaluated in order and rendered as a titled <probe> block. A failing check settles in place as {\"err\" => reason} instead of aborting, so one broken check never loses the rest. Use it to investigate several things in one execute.",
+      binding: nil,
+      category: :core,
+      dispatch: :analyze,
+      signatures: ["(probe \"title\" expr ...)"],
+      since: nil,
+      section: "Functional Tools",
+      ptc_extension?: true,
+      examples: [
+        "(probe \"test files\" (count (tool/find {:target \"**/*.test.ts\"})))",
+        "(probe \"shape\" (keys data/x) \"first\" (first hits))"
+      ],
+      notes:
+        "Sequential analogue of psettled: per-check failures settle as {\"err\" => reason}; ctx threads across checks so a `def` in one is visible to the next. Resource kills (heap/timeout/capacity) still abort the whole run.",
+      see_also: ["psettled", "println", "doc"],
+      clojure_var: nil,
       divergences: nil
     },
     %{

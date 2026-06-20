@@ -1495,6 +1495,10 @@ defmodule PtcRunner.SubAgent.Loop do
       type_prefix =
         case pmap_call.type do
           :pmap -> [:pmap]
+          # SPELL PATCH-1 (D-4): psettled is a pmap variant — emit under the
+          # established [:pmap, ...] telemetry family so existing handlers
+          # (and PR consumers) see it without a new event namespace.
+          :psettled -> [:pmap]
           :pcalls -> [:pcalls]
         end
 

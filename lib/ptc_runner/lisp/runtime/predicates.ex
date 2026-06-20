@@ -49,6 +49,7 @@ defmodule PtcRunner.Lisp.Runtime.Predicates do
   alias PtcRunner.Lisp.Env.Builtin
   alias PtcRunner.Lisp.Keyword, as: LispKeyword
   alias PtcRunner.Lisp.Runtime.Callable
+  alias PtcRunner.Lisp.Runtime.FlexAccess
   alias PtcRunner.Lisp.SourceAtoms
 
   # Plain 1-arity function
@@ -223,6 +224,58 @@ defmodule PtcRunner.Lisp.Runtime.Predicates do
 
   def nil?(x), do: is_nil(x)
   def some?(x), do: not is_nil(x)
+
+  # ============================================================
+  # Settled-result predicates (SPELL PATCH-1, D-4)
+  #
+  # `psettled` yields a list of settled maps: `{"ok" => value}` for a
+  # successful element, `{"err" => reason}` for a failed one. These let a
+  # program branch on outcome WITHOUT exceptions — errors are data.
+  #
+  # Key access goes through `FlexAccess.flex_fetch/2` (the same path `get` and
+  # `contains?` use) so ALL the key forms a program can produce classify
+  # identically: psettled emits binary keys (`%{"ok" => _}`), while a
+  # hand-built map literal `{:ok v}` is `%LispKeyword{name: "ok"}`-keyed
+  # mid-eval. Matching a bare `%{"ok" => _}` pattern would miss the latter.
+  # ============================================================
+
+  def ok?(m) when is_map(m) and not is_struct(m), do: match?({:ok, _}, FlexAccess.flex_fetch(m, "ok"))
+  def ok?(_), do: false
+
+  def err?(m) when is_map(m) and not is_struct(m),
+    do: match?({:ok, _}, FlexAccess.flex_fetch(m, "err"))
+
+  def err?(_), do: false
+
+  @doc """
+  Unwrap a settled `{"ok" => v}` to `v`; for an `{"err" => _}` (or any
+  non-ok value) return `default`. The ergonomic terminator for a settled
+  pipeline: `(map #(unwrap-or % nil) results)`.
+  """
+  def unwrap_or(m, default) when is_map(m) and not is_struct(m) do
+    case FlexAccess.flex_fetch(m, "ok") do
+      {:ok, value} -> value
+      :error -> default
+    end
+  end
+
+  def unwrap_or(_settled, default), do: default
+
+  # ============================================================
+  # Parked-value handle introspection (SPELL PATCH-3 / W2b, D-2/D-7)
+  #
+  # For a NON-handle these are the trivial answers (handle? → false,
+  # handle-meta → nil). For an actual %Handle{} the apply-layer intercepts
+  # FIRST (reading the struct without a store roundtrip), so these clauses only
+  # run for non-handle args. Defined here so the names resolve as real builtins
+  # and `(handle? x)` works uniformly on any value.
+  # ============================================================
+
+  def handle?(%PtcRunner.Lisp.Handle{}), do: true
+  def handle?(_), do: false
+
+  def handle_meta(%PtcRunner.Lisp.Handle{meta: meta}), do: meta
+  def handle_meta(_), do: nil
   def boolean?(x), do: is_boolean(x)
 
   def number?(x), do: is_number(x) or SpecialValues.special?(x)

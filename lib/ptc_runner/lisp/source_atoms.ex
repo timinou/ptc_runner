@@ -101,7 +101,8 @@ defmodule PtcRunner.Lisp.SourceAtoms do
     loop recur
     doseq for
     comment
-    juxt pmap pcalls
+    juxt pmap psettled pcalls
+    handle? handle-meta
     quote apropos dir doc meta ns-publics all-ns ns-name source
     .
   )a

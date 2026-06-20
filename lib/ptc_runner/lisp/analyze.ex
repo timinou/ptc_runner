@@ -125,9 +125,11 @@ defmodule PtcRunner.Lisp.Analyze do
       :or,
       :juxt,
       :pmap,
+      :psettled,
       :pcalls,
       :apply,
       :println,
+      :probe,
       :return,
       :fail,
       :task,
@@ -397,6 +399,9 @@ defmodule PtcRunner.Lisp.Analyze do
   defp dispatch_list_form({:symbol, :or}, rest, _list, tail?), do: analyze_or(rest, tail?)
   defp dispatch_list_form({:symbol, :juxt}, rest, _list, tail?), do: analyze_juxt(rest, tail?)
   defp dispatch_list_form({:symbol, :pmap}, rest, _list, tail?), do: analyze_pmap(rest, tail?)
+
+  defp dispatch_list_form({:symbol, :psettled}, rest, _list, tail?),
+    do: analyze_psettled(rest, tail?)
   defp dispatch_list_form({:symbol, :pcalls}, rest, _list, tail?), do: analyze_pcalls(rest, tail?)
   defp dispatch_list_form({:symbol, :apply}, rest, _list, tail?), do: analyze_apply(rest, tail?)
 
@@ -1086,6 +1091,19 @@ defmodule PtcRunner.Lisp.Analyze do
     {:error, {:invalid_arity, :pmap, "expected (pmap f coll) or (pmap f c1 c2 ...)"}}
   end
 
+  # (psettled f coll) - settled parallel map (SPELL PATCH-1, D-4). Same
+  # analysis as pmap; the SETTLED collection semantics live in the evaluator.
+  defp analyze_psettled([fn_ast, coll_ast], _tail?) do
+    with {:ok, fn_core} <- do_analyze(fn_ast, false),
+         {:ok, coll_core} <- do_analyze(coll_ast, false) do
+      {:ok, {:psettled, fn_core, coll_core}}
+    end
+  end
+
+  defp analyze_psettled(_, _tail?) do
+    {:error, {:invalid_arity, :psettled, "expected (psettled f coll)"}}
+  end
+
   # ============================================================
   # Parallel calls: pcalls
   # ============================================================
@@ -1143,6 +1161,99 @@ defmodule PtcRunner.Lisp.Analyze do
 
   defp analyze_fail(_, _tail?) do
     {:error, {:invalid_arity, :fail, "expected (fail error)"}}
+  end
+
+  # ============================================================
+  # Exception handling: (try body... (catch e handler...) (finally cleanup...))
+  # SPELL PATCH-8 (FEAT-812): Clojure-shaped try. `catch` and `finally` are both
+  # OPTIONAL and, when present, MUST be the trailing clauses (catch before
+  # finally), exactly like Clojure. The body is everything before them.
+  # The catch binds ONE symbol to the error value (a string for raised/tool
+  # errors, or the raw value passed to `(fail v)`). NB: catch CANNOT trap
+  # sandbox resource kills (heap/timeout/capacity) — the evaluator re-raises
+  # those past the handler (see Eval.do_eval/2 {:try,...}).
+  # ============================================================
+
+  defp analyze_try(forms) do
+    {finally_forms, rest1} = split_trailing_clause(forms, :finally)
+    {catch_forms, body_forms} = split_trailing_clause(rest1, :catch)
+
+    with {:ok, catch_clause} <- analyze_try_catch(catch_forms),
+         {:ok, finally_do} <- analyze_try_finally(finally_forms),
+         {:ok, body_do} <- wrap_body(body_forms, false) do
+      {:ok, {:try, body_do, catch_clause, finally_do}}
+    end
+  end
+
+  # Pull a trailing `(clause ...)` off the END of the form list (Clojure order:
+  # body, then catch, then finally). Returns {clause_forms | nil, remaining}.
+  defp split_trailing_clause(forms, clause) do
+    case List.last(forms) do
+      {:list, [{:symbol, ^clause} | clause_args]} ->
+        {clause_args, Enum.drop(forms, -1)}
+
+      _ ->
+        {nil, forms}
+    end
+  end
+
+  defp analyze_try_catch(nil), do: {:ok, nil}
+
+  # The catch var symbol is the INTERNED name (atom if in the bounded vocab,
+  # else a binary) — the same representation `{:var, name}` resolves against, so
+  # the handler binding key matches. Accept either.
+  defp analyze_try_catch([{:symbol, var} | handler_forms])
+       when is_atom(var) or is_binary(var) do
+    with {:ok, handler_do} <- wrap_body(handler_forms, false) do
+      {:ok, {var, handler_do}}
+    end
+  end
+
+  defp analyze_try_catch(_) do
+    {:error, {:invalid_form, "(catch e handler...) requires a single binding symbol"}}
+  end
+
+  defp analyze_try_finally(nil), do: {:ok, nil}
+
+  defp analyze_try_finally(forms) do
+    with {:ok, finally_do} <- wrap_body(forms, false) do
+      {:ok, finally_do}
+    end
+  end
+
+  # ============================================================
+  # Investigation: (probe "title" expr "title" expr ...)
+  # A labelled, ordered sequence of checks. Each (title, expr) pair is evaluated
+  # in order; the result is an ORDERED list of [title value] pairs (a vector, so
+  # insertion order survives the wire — a map would sort keys). A pair whose expr
+  # fails settles in place as [title {"err" reason}] instead of aborting the run
+  # (the SEQUENTIAL analogue of psettled), so one broken check never loses the
+  # rest. Global safety kills (heap/timeout/capacity) still abort, like try.
+  # The execute tool renders each pair as a <probe title="...">value</probe>
+  # block, so an investigation reads as titled sections rather than raw data.
+  # ============================================================
+
+  defp analyze_probe(forms) when rem(length(forms), 2) == 0 do
+    forms
+    |> Enum.chunk_every(2)
+    |> Enum.reduce_while({:ok, []}, fn [title_ast, body_ast], {:ok, acc} ->
+      with {:ok, title} <- do_analyze(title_ast, false),
+           {:ok, body} <- do_analyze(body_ast, false) do
+        {:cont, {:ok, [{title, body} | acc]}}
+      else
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, pairs} -> {:ok, {:probe, Enum.reverse(pairs)}}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp analyze_probe(_forms) do
+    {:error,
+     {:invalid_arity, :probe,
+      "expected (probe \"title\" expr ...) with an even number of forms (title/expr pairs)"}}
   end
 
   # ============================================================

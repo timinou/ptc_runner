@@ -307,6 +307,13 @@ defmodule PtcRunner.Lisp.Runtime do
 
   defdelegate nil?(x), to: Predicates
   defdelegate some?(x), to: Predicates
+  # Settled-result predicates (SPELL PATCH-1, D-4)
+  defdelegate ok?(x), to: Predicates
+  defdelegate err?(x), to: Predicates
+  defdelegate unwrap_or(settled, default), to: Predicates
+  # Parked-value handle introspection (SPELL PATCH-3 / W2b)
+  defdelegate handle?(x), to: Predicates
+  defdelegate handle_meta(x), to: Predicates
   defdelegate boolean?(x), to: Predicates
   defdelegate number?(x), to: Predicates
   defdelegate int?(x), to: Predicates
