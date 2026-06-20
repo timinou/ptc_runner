@@ -200,6 +200,13 @@ defmodule PtcRunner.Step do
     # differs. `nil` when no run executed (error before eval). PTC has no
     # `undef`, so there is no `removed` set; a delta can only add or rebind.
     :def_delta,
+    # SPELL MOVE-C: the executed CoreAST (the structured form the runtime parsed
+    # and ran), or nil. `Step.memory`/`return` are data; `form` is the program
+    # AS DATA, so a consumer (Hist lenses) can walk the real tree — defs, tool
+    # calls, structure — instead of re-parsing the `program` STRING. The AST is
+    # the canonical `{:def, name, val, meta}` / `{:tool_call, name, args}` shape
+    # from PtcRunner.Lisp.Analyze.
+    :form,
     :journal,
     :signature,
     :usage,
@@ -354,6 +361,7 @@ defmodule PtcRunner.Step do
           fail: fail() | nil,
           memory: map(),
           def_delta: %{introduced: map(), changed: map()} | nil,
+          form: term() | nil,
           journal: map() | nil,
           signature: String.t() | nil,
           usage: usage() | nil,

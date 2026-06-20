@@ -41,6 +41,8 @@ defmodule PtcRunner.Lisp.Eval.Context do
   defstruct [
     :ctx,
     :user_ns,
+    # SPELL MOVE-C: the executed CoreAST (top-level program), or nil.
+    :core_ast,
     # SPELL MOVE-A: the `user_ns` (def memory) as it entered this run, captured
     # once at `new/6` and never mutated. The runtime already knows every `(def
     # ...)` it evaluated; diffing `initial_user_ns` against the final `user_ns`
@@ -209,6 +211,7 @@ defmodule PtcRunner.Lisp.Eval.Context do
           ctx: map(),
           user_ns: map(),
           initial_user_ns: map(),
+          core_ast: term() | nil,
           env: map(),
           tool_exec: (String.t(), map(), map() | nil -> term()),
           origin_stack: [map()],
@@ -295,6 +298,12 @@ defmodule PtcRunner.Lisp.Eval.Context do
       # SPELL MOVE-A: snapshot the entering def memory so the Step can emit the
       # per-run def-delta without a separate downstream snapshot diff.
       initial_user_ns: user_ns,
+      # SPELL MOVE-C: the executed CoreAST. The runtime parsed the program string
+      # to this AST to run it; carrying it lets the Step emit the structured form
+      # so consumers (Hist lenses) walk a real tree instead of re-parsing the
+      # string. `nil` for nested/closure contexts that re-use new/6 without a
+      # top-level program.
+      core_ast: Keyword.get(opts, :core_ast),
       env: env,
       tool_exec: tool_exec,
       origin_stack: Keyword.get(opts, :origin_stack, []),

@@ -1035,6 +1035,9 @@ defmodule PtcRunner.Lisp do
       # entering vs final def memory. Same externalization as `memory` so the
       # values are wire-identical to what a consumer would read off the full map.
       def_delta: compute_def_delta(ctx.initial_user_ns, ctx.user_ns),
+      # SPELL MOVE-C: the executed CoreAST as structured data, so consumers walk
+      # the tree instead of re-parsing `program`.
+      form: ctx.core_ast,
       journal: ctx.journal,
       summaries: ctx.summaries,
       tool_cache: ctx.tool_cache,

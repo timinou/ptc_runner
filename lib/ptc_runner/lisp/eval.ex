@@ -78,6 +78,11 @@ defmodule PtcRunner.Lisp.Eval do
           {:ok, value(), EvalContext.t()} | {:error, runtime_error()}
   def eval_with_context(ast, ctx, memory, env, tool_executor, turn_history \\ [], opts \\ []) do
     tool_executor = normalize_tool_executor(tool_executor)
+    # SPELL MOVE-C: retain the executed CoreAST on the context so the Step can
+    # emit the structured form (consumers walk the tree, not the re-parsed
+    # string). Only the top-level eval sets it; nested closure contexts that
+    # build their own EvalContext leave it nil.
+    opts = Keyword.put_new(opts, :core_ast, ast)
     eval_ctx = EvalContext.new(ctx, memory, env, tool_executor, turn_history, opts)
 
     try do
