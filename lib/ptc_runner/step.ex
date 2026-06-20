@@ -445,52 +445,28 @@ defmodule PtcRunner.Step do
   `t:unrealized/0` tombstone rather than raising. A Step with no handles is
   returned unchanged (cheap walk, no allocation churn beyond the scan).
   """
+  #
+  # Implementation note: the deep handle-realization walk lives in
+  # `PtcRunner.Lisp.Handle.deep_realize/1` (the single runtime walker). `freeze/1`
+  # applies it to each handle-bearing Step field; the continuation/tape path in a
+  # consumer calls the same `deep_realize/1` directly. One algorithm, one
+  # tombstone tag.
   @spec freeze(t()) :: t()
   def freeze(%__MODULE__{} = step) do
     %{
       step
-      | return: freeze_term(step.return),
-        memory: freeze_term(step.memory),
-        def_delta: freeze_term(step.def_delta),
-        tool_calls: freeze_term(step.tool_calls),
-        pmap_calls: freeze_term(step.pmap_calls),
-        turns: freeze_term(step.turns)
+      | return: PtcRunner.Lisp.Handle.deep_realize(step.return),
+        memory: PtcRunner.Lisp.Handle.deep_realize(step.memory),
+        def_delta: PtcRunner.Lisp.Handle.deep_realize(step.def_delta),
+        tool_calls: PtcRunner.Lisp.Handle.deep_realize(step.tool_calls),
+        pmap_calls: PtcRunner.Lisp.Handle.deep_realize(step.pmap_calls),
+        turns: PtcRunner.Lisp.Handle.deep_realize(step.turns)
     }
   end
 
-  @doc "Whether `term` is a freeze-time unrealizable tombstone."
+  @doc "Whether `term` is a freeze-time unrealizable tombstone (delegates to `Handle.unrealized?/1`)."
   @spec unrealized?(term()) :: boolean()
-  def unrealized?({:__frozen_unrealized__, _reason, _meta}), do: true
-  def unrealized?(_), do: false
-
-  # A handle is realized through its store, then the materialized value is
-  # frozen (it may nest handles). A non-Handle struct has its public fields
-  # frozen while preserving the struct type. The handle's `store`/`id` are never
-  # walked field-wise.
-  defp freeze_term(term) do
-    cond do
-      PtcRunner.Lisp.Handle.handle?(term) -> freeze_handle(term)
-      is_map(term) and not is_struct(term) -> Map.new(term, fn {k, v} -> {freeze_term(k), freeze_term(v)} end)
-      is_struct(term) -> freeze_struct(term)
-      is_list(term) -> Enum.map(term, &freeze_term/1)
-      is_tuple(term) -> term |> Tuple.to_list() |> Enum.map(&freeze_term/1) |> List.to_tuple()
-      true -> term
-    end
-  end
-
-  defp freeze_handle(%PtcRunner.Lisp.Handle{meta: meta} = handle) do
-    case PtcRunner.Lisp.HandleStore.realize(handle) do
-      {:ok, term} -> freeze_term(term)
-      {:error, reason} -> {:__frozen_unrealized__, reason, meta}
-    end
-  end
-
-  defp freeze_struct(%mod{} = s) do
-    s
-    |> Map.from_struct()
-    |> Map.new(fn {k, v} -> {k, freeze_term(v)} end)
-    |> then(&struct(mod, &1))
-  end
+  def unrealized?(term), do: PtcRunner.Lisp.Handle.unrealized?(term)
 
   @doc """
   Creates a new failed Step.

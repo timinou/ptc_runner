@@ -49,6 +49,74 @@ defmodule PtcRunner.Lisp.Handle do
   def handle?(%__MODULE__{}), do: true
   def handle?(_), do: false
 
+  @typedoc """
+  Marker left in place of a handle that could NOT be realized at write time
+  (already evicted/tombstoned by the HandleStore reaper). Carries the failure
+  reason and the handle's `meta` so a consumer can still orient on the dead
+  binding instead of crashing.
+  """
+  @type tombstone :: {:__frozen_unrealized__, term(), map()}
+
+  @doc """
+  Deep-walk `term`, replacing every `%Handle{}` with its full realized value
+  (recursively realized, since a realized value can itself nest handles).
+
+  Recurses into maps (non-struct), lists, tuples, and the public fields of
+  structs; non-handle leaves pass through unchanged. A handle that fails to
+  realize (evicted/stale) degrades to a `t:tombstone/0`
+  `{:__frozen_unrealized__, reason, meta}` rather than crashing the caller.
+
+  This is the single handle-realization walker for the runtime: `Step.freeze/1`
+  delegates to it, and external consumers (e.g. spell Hist's continuation tape)
+  call it directly to materialize handles at the OWNER while the parked term is
+  guaranteed live — before the HandleStore session bucket can cold-evict it.
+  """
+  @spec deep_realize(term()) :: term()
+  def deep_realize(term) do
+    cond do
+      handle?(term) ->
+        realize_handle(term)
+
+      is_map(term) and not is_struct(term) ->
+        Map.new(term, fn {k, v} -> {deep_realize(k), deep_realize(v)} end)
+
+      is_struct(term) ->
+        realize_struct(term)
+
+      is_list(term) ->
+        Enum.map(term, &deep_realize/1)
+
+      is_tuple(term) ->
+        term |> Tuple.to_list() |> Enum.map(&deep_realize/1) |> List.to_tuple()
+
+      true ->
+        term
+    end
+  end
+
+  @doc "Whether `term` is a `deep_realize/1` unrealizable tombstone."
+  @spec unrealized?(term()) :: boolean()
+  def unrealized?({:__frozen_unrealized__, _reason, _meta}), do: true
+  def unrealized?(_), do: false
+
+  # A handle is realized THROUGH its store (its `store`/`id` are a pid/ref we
+  # must never walk field-wise), then the materialized value is itself walked
+  # (it may nest handles).
+  defp realize_handle(%__MODULE__{meta: meta} = handle) do
+    case PtcRunner.Lisp.HandleStore.realize(handle) do
+      {:ok, term} -> deep_realize(term)
+      {:error, reason} -> {:__frozen_unrealized__, reason, meta}
+    end
+  end
+
+  # A non-Handle struct: realize its public fields, preserve the struct type.
+  defp realize_struct(%mod{} = s) do
+    s
+    |> Map.from_struct()
+    |> Map.new(fn {k, v} -> {k, deep_realize(v)} end)
+    |> then(&struct(mod, &1))
+  end
+
   @doc """
   Build the `meta` map describing `term` without retaining it. Cheap, shallow:
   byte size (flat, via `:erts_debug.flat_size` in words → bytes), shape, the
