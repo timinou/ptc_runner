@@ -412,6 +412,8 @@ defmodule PtcRunner.Lisp.Analyze do
 
   defp dispatch_list_form({:symbol, :return}, rest, _list, tail?), do: analyze_return(rest, tail?)
   defp dispatch_list_form({:symbol, :fail}, rest, _list, tail?), do: analyze_fail(rest, tail?)
+  defp dispatch_list_form({:symbol, :try}, rest, _list, _tail?), do: analyze_try(rest)
+  defp dispatch_list_form({:symbol, :probe}, rest, _list, _tail?), do: analyze_probe(rest)
   defp dispatch_list_form({:symbol, :task}, rest, _list, tail?), do: analyze_task(rest, tail?)
 
   defp dispatch_list_form({:symbol, :"step-done"}, rest, _list, tail?),

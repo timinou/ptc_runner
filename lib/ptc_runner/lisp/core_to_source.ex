@@ -155,6 +155,34 @@ defmodule PtcRunner.Lisp.CoreToSource do
     "(fail #{format(value)})"
   end
 
+  # try/catch/finally (SPELL PATCH-8). body/handler/finally are `{:do, exprs}`
+  # blocks; splice their exprs inline so the round-trip reads as Clojure source.
+  def format({:try, body_do, catch_clause, finally_do}) do
+    catch_str =
+      case catch_clause do
+        {var, handler_do} -> " (catch #{var} #{format_do_inner(handler_do)})"
+        nil -> ""
+      end
+
+    finally_str =
+      case finally_do do
+        nil -> ""
+        d -> " (finally #{format_do_inner(d)})"
+      end
+
+    "(try #{format_do_inner(body_do)}#{catch_str}#{finally_str})"
+  end
+
+  # probe (investigation): an ordered list of {title_ast, body_ast} pairs.
+  def format({:probe, pairs}) do
+    inner =
+      pairs
+      |> Enum.map(fn {title, body} -> "#{format(title)} #{format(body)}" end)
+      |> Enum.join(" ")
+
+    "(probe #{inner})"
+  end
+
   # Recur
   def format({:recur, args}) do
     "(recur #{format_list(args)})"
@@ -203,6 +231,11 @@ defmodule PtcRunner.Lisp.CoreToSource do
   def format({:juxt, fns}) do
     "(juxt #{format_list(fns)})"
   end
+
+  # Splice the exprs of a `{:do, exprs}` block inline (no wrapping `(do ...)`),
+  # for try/catch/finally bodies. A non-do node formats as itself.
+  defp format_do_inner({:do, exprs}), do: format_list(exprs)
+  defp format_do_inner(node), do: format(node)
 
   # --- Closure serialization ---
 

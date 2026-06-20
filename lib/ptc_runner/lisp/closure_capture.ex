@@ -50,6 +50,23 @@ defmodule PtcRunner.Lisp.ClosureCapture do
     collect_free_var_refs(body, acc, inner_bound)
   end
 
+  # try/catch (SPELL PATCH-8): the catch var binds ONLY inside the handler body;
+  # try body and finally see the outer scope. Walk each with the right `bound`.
+  defp collect_free_var_refs({:try, body_do, catch_clause, finally_do}, acc, bound) do
+    acc = collect_free_var_refs(body_do, acc, bound)
+
+    acc =
+      case catch_clause do
+        {var, handler_do} ->
+          collect_free_var_refs(handler_do, acc, MapSet.put(bound, to_string(var)))
+
+        nil ->
+          acc
+      end
+
+    collect_free_var_refs(finally_do, acc, bound)
+  end
+
   defp collect_free_var_refs(tuple, acc, bound) when is_tuple(tuple) do
     collect_free_var_refs(Tuple.to_list(tuple), acc, bound)
   end

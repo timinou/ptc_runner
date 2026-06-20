@@ -143,6 +143,7 @@ defmodule PtcRunner.Lisp.Eval.Helpers do
   @special_forms MapSet.new([
                    :return,
                    :fail,
+                   :try,
                    :let,
                    :if,
                    :fn,
