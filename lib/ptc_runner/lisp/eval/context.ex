@@ -379,6 +379,20 @@ defmodule PtcRunner.Lisp.Eval.Context do
   # duplicate-fetch detection, and args are tiny in the fold use case anyway.
   # Small results pass through identically so existing entries are byte-for-
   # byte unchanged.
+  # SPELL PATCH-3 (D-2): a parked tool result is a `%PtcRunner.Lisp.Handle{}`,
+  # NOT raw data. The 0.12 ledger compaction below sizes the result via
+  # `referenced_binary_size/1`, which enumerates a map — and a handle struct
+  # satisfies `is_map/1` but is NOT Enumerable, so it would crash the recording
+  # of ANY program that calls a tool returning a large (parked) result, even one
+  # that discards the result. Store the handle's small carried meta summary
+  # instead of trying to size/serialize the struct.
+  defp compact_ledger_entry(%{result: %PtcRunner.Lisp.Handle{meta: meta}} = tool_call, _cap) do
+    tool_call
+    |> Map.put(:result, %{"__type__" => "ptc_runner.lisp.handle", "meta" => meta})
+    |> Map.put(:result_truncated, true)
+    |> put_handle_result_bytes(meta)
+  end
+
   defp compact_ledger_entry(%{result: result} = tool_call, cap)
        when is_integer(cap) and cap > 0 and not is_nil(result) do
     case retained_size(result, cap) do
@@ -394,6 +408,14 @@ defmodule PtcRunner.Lisp.Eval.Context do
   end
 
   defp compact_ledger_entry(tool_call, _cap), do: tool_call
+
+  # SPELL PATCH-3 (D-2): carry the parked byte count from the handle meta into
+  # the ledger entry, matching the `:result_bytes` field a truncated raw result
+  # would set. `meta["bytes"]` is the serialized size measured at park time.
+  defp put_handle_result_bytes(tool_call, %{"bytes" => bytes}) when is_integer(bytes),
+    do: Map.put(tool_call, :result_bytes, bytes)
+
+  defp put_handle_result_bytes(tool_call, _meta), do: tool_call
 
   @word_bytes :erlang.system_info(:wordsize)
 
@@ -440,7 +462,13 @@ defmodule PtcRunner.Lisp.Eval.Context do
   defp referenced_binary_size(value) when is_list(value),
     do: Enum.reduce(value, 0, &(referenced_binary_size(&1) + &2))
 
-  defp referenced_binary_size(value) when is_map(value),
+  # SPELL PATCH-3 (D-2): a handle is a struct (is_map/1 true) but NOT Enumerable;
+  # it references no inline binaries (the parked term lives off-heap in the
+  # HandleStore), so its referenced binary size is 0. This guard also protects
+  # the recursive walk if a handle is nested inside another result.
+  defp referenced_binary_size(%PtcRunner.Lisp.Handle{}), do: 0
+
+  defp referenced_binary_size(value) when is_map(value) and not is_struct(value),
     do:
       Enum.reduce(value, 0, fn {k, v}, acc ->
         acc + referenced_binary_size(k) + referenced_binary_size(v)
