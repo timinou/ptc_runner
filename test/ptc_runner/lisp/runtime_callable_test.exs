@@ -271,7 +271,11 @@ defmodule PtcRunner.Lisp.RuntimeCallableTest do
       assert {:error, second} = Lisp.run(~S|(f [{:x 7}])|, memory: first.memory, tools: %{})
 
       assert second.fail.reason == :unknown_tool
-      assert second.fail.message =~ "Unknown tool: echo"
+      # SPELL BUG-463: the unknown-tool message is now self-correcting (names the
+      # tool, explains denied tools, lists the available set) instead of a bare
+      # "Unknown tool: <name>".
+      assert second.fail.message =~ "echo"
+      assert second.fail.message =~ "not callable from a program"
     end
 
     test "runtime callable captured by persisted comp uses next run tool context" do
@@ -286,7 +290,11 @@ defmodule PtcRunner.Lisp.RuntimeCallableTest do
       assert {:error, second} = Lisp.run(~S|(f {:x 7})|, memory: first.memory, tools: %{})
 
       assert second.fail.reason == :unknown_tool
-      assert second.fail.message =~ "Unknown tool: echo"
+      # SPELL BUG-463: the unknown-tool message is now self-correcting (names the
+      # tool, explains denied tools, lists the available set) instead of a bare
+      # "Unknown tool: <name>".
+      assert second.fail.message =~ "echo"
+      assert second.fail.message =~ "not callable from a program"
     end
 
     test "runtime callable captured by comp still works in same run" do

@@ -176,7 +176,11 @@ defmodule PtcRunner.Lisp.CompileLimitsTest do
     end
 
     test "validate/1 still reports undefined vars" do
-      assert {:error, ["foo"]} = Lisp.validate("(+ foo 1)")
+      # SPELL PATCH-2: validate now routes undefined vars through the rich hint
+      # builder, so the message carries a "Did you mean" suggestion rather than
+      # the bare name.
+      assert {:error, [msg]} = Lisp.validate("(+ foo 1)")
+      assert msg =~ "foo"
     end
 
     test "memory persists across execution" do
